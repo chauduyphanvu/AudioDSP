@@ -3,12 +3,13 @@ import SwiftUI
 /// Parametric EQ panel with curve visualization and band controls
 struct EQPanel: View {
     @ObservedObject var state: DSPState
-    var sampleRate: Float = 48000  // From audio engine
+    var sampleRate: Float = 48000
     @State private var selectedBand: Int = 0
+    @State private var showPhaseResponse: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
-            // Header
+            // Header with phase toggle
             HStack {
                 EffectHeader(
                     name: "Parametric EQ",
@@ -16,15 +17,55 @@ struct EQPanel: View {
                     onToggle: { state.toggleEQBypass() }
                 )
                 Spacer()
+
+                // Phase response toggle
+                Button(action: { showPhaseResponse.toggle() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "waveform.path")
+                            .font(.system(size: 10))
+                        Text("Phase")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(showPhaseResponse ? DSPTheme.accent : DSPTheme.textTertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(showPhaseResponse ? DSPTheme.accent.opacity(0.15) : DSPTheme.surfaceBackground)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                // Clear solo button (shown when any band is soloed)
+                if state.hasEQSolo {
+                    Button(action: { state.clearAllEQSolo() }) {
+                        Text("Clear Solo")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(DSPTheme.meterYellow)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(DSPTheme.meterYellow.opacity(0.15))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             // EQ Curve visualization with spectrum overlay
             EQCurveView(
                 bands: state.eqBands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType) },
+                bandSoloStates: state.eqBands.map { $0.solo },
                 selectedBand: selectedBand,
                 onBandSelected: { selectedBand = $0 },
+                onBandDragged: { index, freq, gain in
+                    state.eqBands[index].frequency = freq
+                    state.eqBands[index].gainDb = gain
+                },
                 sampleRate: sampleRate,
-                spectrumData: state.spectrumData
+                spectrumData: state.spectrumData,
+                showPhaseResponse: showPhaseResponse
             )
             .frame(height: 140)
 
@@ -35,7 +76,8 @@ struct EQPanel: View {
                         band: $state.eqBands[index],
                         index: index,
                         isSelected: selectedBand == index,
-                        onSelect: { selectedBand = index }
+                        onSelect: { selectedBand = index },
+                        onSoloToggle: { state.toggleEQBandSolo(at: index) }
                     )
                 }
             }
@@ -46,18 +88,19 @@ struct EQPanel: View {
     }
 }
 
-/// Individual EQ band control
+/// Individual EQ band control with solo and resonance/Q display
 struct BandControl: View {
     @Binding var band: EQBandState
     let index: Int
     var isSelected: Bool
     var onSelect: () -> Void
+    var onSoloToggle: () -> Void
 
     @State private var isDraggingGain = false
     @State private var dragStartGain: Float = 0
     @State private var dragStartY: CGFloat = 0
 
-    private let gainSliderHeight: CGFloat = 72  // Taller for better precision (~0.67 dB per pixel)
+    private let gainSliderHeight: CGFloat = 72
 
     private var bandName: String {
         ["LOW", "LO-MID", "MID", "HI-MID", "HIGH"][index]
@@ -68,35 +111,67 @@ struct BandControl: View {
     }
 
     private var defaultQ: Float {
-        index == 0 || index == 4 ? 0.707 : 1.0  // Shelves vs peaks
+        index == 0 || index == 4 ? 0.707 : 1.0
+    }
+
+    /// Label for Q parameter based on filter type
+    private var qParameterLabel: String {
+        band.bandType.isResonant ? "Res" : "Q"
     }
 
     var body: some View {
         VStack(spacing: 6) {
             // Band type selector and label
-            Menu {
-                Button("Low Shelf") { band.bandType = .lowShelf }
-                Button("Peak") { band.bandType = .peak }
-                Button("High Shelf") { band.bandType = .highShelf }
-                Button("Low Pass") { band.bandType = .lowPass }
-                Button("High Pass") { band.bandType = .highPass }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(bandName)
-                        .font(DSPTypography.caption)
-                        .foregroundColor(isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8))
-                        .foregroundColor(DSPTheme.textTertiary)
+            HStack(spacing: 4) {
+                Menu {
+                    Button("Low Shelf") { band.bandType = .lowShelf }
+                    Button("Peak") { band.bandType = .peak }
+                    Button("High Shelf") { band.bandType = .highShelf }
+                    Divider()
+                    Button("Low Pass") { band.bandType = .lowPass }
+                    Button("High Pass") { band.bandType = .highPass }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(bandName)
+                            .font(DSPTypography.caption)
+                            .foregroundColor(isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundColor(DSPTheme.textTertiary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .onTapGesture(perform: onSelect)
+
+                // Solo button
+                Button(action: onSoloToggle) {
+                    Text("S")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(band.solo ? .black : DSPTheme.textTertiary)
+                        .frame(width: 16, height: 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(band.solo ? DSPTheme.meterYellow : DSPTheme.surfaceBackground)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Solo this band")
+            }
+
+            // Band type indicator with resonance warning
+            HStack(spacing: 2) {
+                Text(bandTypeLabel)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(DSPTheme.textTertiary)
+
+                // Show resonance indicator for LP/HP modes with high Q
+                if band.bandType.isResonant && band.q > 2.0 {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 7))
+                        .foregroundColor(DSPTheme.meterOrange)
+                        .help("High resonance - may cause ringing")
                 }
             }
-            .menuStyle(.borderlessButton)
-            .onTapGesture(perform: onSelect)
-
-            // Band type indicator
-            Text(bandTypeLabel)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundColor(DSPTheme.textTertiary)
 
             // Frequency knob with logarithmic scaling
             CompactKnob(
@@ -121,14 +196,23 @@ struct BandControl: View {
                     .foregroundColor(DSPTheme.textSecondary)
             }
 
-            // Q knob
-            CompactKnob(
-                value: $band.q,
-                range: 0.1...10,
-                label: "Q",
-                unit: .generic,
-                defaultValue: defaultQ
-            )
+            // Q/Resonance knob with bandwidth display
+            VStack(spacing: 2) {
+                CompactKnob(
+                    value: $band.q,
+                    range: 0.1...10,
+                    label: qParameterLabel,
+                    unit: .generic,
+                    defaultValue: defaultQ
+                )
+
+                // Show bandwidth in octaves for peak filters
+                if !band.bandType.isResonant {
+                    Text(String(format: "%.1f oct", band.bandwidthOctaves))
+                        .font(.system(size: 8))
+                        .foregroundColor(DSPTheme.textTertiary)
+                }
+            }
         }
         .padding(8)
         .background(isSelected ? DSPTheme.eqBandColors[index].opacity(0.1) : Color.clear)
@@ -160,8 +244,8 @@ struct GainSlider: View {
     @State private var dragStartGain: Float = 0
     @State private var dragStartY: CGFloat = 0
 
-    private let normalSensitivity: Float = 48.0 / 72.0  // Full range over slider height
-    private let fineSensitivity: Float = 48.0 / 720.0  // 10x finer with Option key
+    private let normalSensitivity: Float = 48.0 / 72.0
+    private let fineSensitivity: Float = 48.0 / 720.0
 
     private var normalizedGain: Float {
         (gainDb + 24) / 48
@@ -207,7 +291,6 @@ struct GainSlider: View {
         }
         .frame(width: 20, height: height)
         .contentShape(Rectangle())
-        // Fine adjustment with Option key
         .gesture(
             DragGesture(minimumDistance: 0)
                 .modifiers(.option)
@@ -216,7 +299,6 @@ struct GainSlider: View {
                 }
                 .onEnded { _ in isDragging = false }
         )
-        // Normal adjustment
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { gesture in
@@ -224,7 +306,6 @@ struct GainSlider: View {
                 }
                 .onEnded { _ in isDragging = false }
         )
-        // Double-click to reset to 0 dB
         .onTapGesture(count: 2) {
             withAnimation(.easeOut(duration: 0.15)) {
                 gainDb = 0

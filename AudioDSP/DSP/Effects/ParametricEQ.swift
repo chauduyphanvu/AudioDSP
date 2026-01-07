@@ -1,6 +1,6 @@
 import Foundation
 
-/// 5-band Parametric Equalizer
+/// 5-band Parametric Equalizer with soft clipping protection and solo mode
 final class ParametricEQ: Effect, @unchecked Sendable {
     private var bands: [EQBand]
     private let sampleRate: Float
@@ -9,8 +9,22 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     let name = "Parametric EQ"
 
+    // Soft clipper for gain staging protection
+    // Threshold at ~0.9 linear amplitude (-0.92 dB)
+    private let softClipThreshold: Float = 0.9
+    private let softClipKnee: Float = 0.1
+
+    // Atomic solo bitmask - each bit represents a band's solo state
+    // Uses atomic operations for thread-safe access between UI and audio threads
+    // With 5 bands, bits 0-4 are used
+    private let soloMaskPtr: UnsafeMutablePointer<UInt32>
+
     init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
+
+        // Allocate atomic solo mask
+        self.soloMaskPtr = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+        soloMaskPtr.initialize(to: 0)
 
         // Default 5-band layout: Low Shelf, 3x Peak, High Shelf
         bands = [
@@ -22,16 +36,79 @@ final class ParametricEQ: Effect, @unchecked Sendable {
         ]
     }
 
+    deinit {
+        soloMaskPtr.deinitialize(count: 1)
+        soloMaskPtr.deallocate()
+    }
+
+    /// Get current solo mask atomically (thread-safe for audio thread)
+    /// OSAtomicAdd32(0, ...) returns the current value after adding 0, which is an atomic read
+    @inline(__always)
+    private func getSoloMask() -> UInt32 {
+        let signed = OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(soloMaskPtr)))
+        return UInt32(bitPattern: signed)
+    }
+
+    /// Set solo bit for a band atomically
+    private func setSoloBit(_ index: Int, _ value: Bool) {
+        let bit = UInt32(1 << index)
+        if value {
+            OSAtomicOr32(bit, UnsafeMutablePointer<UInt32>(soloMaskPtr))
+        } else {
+            OSAtomicAnd32(~bit, UnsafeMutablePointer<UInt32>(soloMaskPtr))
+        }
+    }
+
+    /// Soft clipper to prevent harsh clipping from aggressive EQ boosts
+    /// Uses tanh-based saturation for musical limiting
+    @inline(__always)
+    private func softClip(_ sample: Float) -> Float {
+        let threshold = softClipThreshold
+        let absSample = abs(sample)
+
+        if absSample <= threshold {
+            return sample
+        }
+
+        // Soft saturation above threshold using tanh
+        let sign: Float = sample >= 0 ? 1 : -1
+        let excess = absSample - threshold
+        let knee = softClipKnee
+
+        // Smooth transition using tanh compression
+        let compressed = threshold + knee * tanh(excess / knee)
+        return sign * min(compressed, 1.0)
+    }
+
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
         var l = left
         var r = right
 
-        for band in bands {
-            let result = band.process(left: l, right: r)
-            l = result.left
-            r = result.right
+        // Read solo mask atomically (thread-safe)
+        let soloMask = getSoloMask()
+
+        if soloMask != 0 {
+            // Process only soloed bands using atomic bitmask
+            for index in 0..<bands.count {
+                if (soloMask & UInt32(1 << index)) != 0 {
+                    let result = bands[index].process(left: l, right: r)
+                    l = result.left
+                    r = result.right
+                }
+            }
+        } else {
+            // Normal processing - all bands in series
+            for band in bands {
+                let result = band.process(left: l, right: r)
+                l = result.left
+                r = result.right
+            }
         }
+
+        // Apply soft clipping to prevent harsh clipping from aggressive boosts
+        l = softClip(l)
+        r = softClip(r)
 
         return (l, r)
     }
@@ -47,9 +124,31 @@ final class ParametricEQ: Effect, @unchecked Sendable {
         bands[index].update(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
     }
 
+    func setSolo(_ index: Int, solo: Bool) {
+        guard index >= 0, index < bands.count else { return }
+        bands[index].setSolo(solo)
+        setSoloBit(index, solo)
+    }
+
+    func clearAllSolo() {
+        for (index, band) in bands.enumerated() {
+            band.setSolo(false)
+            setSoloBit(index, false)
+        }
+    }
+
     func getBand(_ index: Int) -> EQBand? {
         guard index >= 0, index < bands.count else { return nil }
         return bands[index]
+    }
+
+    func isBandSoloed(_ index: Int) -> Bool {
+        guard index >= 0, index < bands.count else { return false }
+        return (getSoloMask() & UInt32(1 << index)) != 0
+    }
+
+    var hasSoloedBand: Bool {
+        getSoloMask() != 0
     }
 
     var bandCount: Int { bands.count }
@@ -114,7 +213,11 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     func magnitudeAt(frequency: Float) -> Float {
         var magnitude: Float = 1.0
 
-        for band in bands {
+        // Check if any band is soloed
+        let soloedBands = bands.filter { $0.solo }
+        let bandsToProcess = soloedBands.isEmpty ? bands : soloedBands
+
+        for band in bandsToProcess {
             let omega = 2.0 * Float.pi * frequency / sampleRate
             let cosOmega = cos(omega)
             let cos2Omega = cos(2.0 * omega)
@@ -143,8 +246,51 @@ final class ParametricEQ: Effect, @unchecked Sendable {
         return magnitude
     }
 
+    /// Calculate phase response at a given frequency (in radians)
+    func phaseAt(frequency: Float) -> Float {
+        var totalPhase: Float = 0.0
+
+        // Check if any band is soloed
+        let soloedBands = bands.filter { $0.solo }
+        let bandsToProcess = soloedBands.isEmpty ? bands : soloedBands
+
+        for band in bandsToProcess {
+            let omega = 2.0 * Float.pi * frequency / sampleRate
+            let cosOmega = cos(omega)
+            let cos2Omega = cos(2.0 * omega)
+            let sinOmega = sin(omega)
+            let sin2Omega = sin(2.0 * omega)
+
+            let coeffs = BiquadCoefficients.calculate(
+                type: band.bandType.toBiquadType(gainDb: band.gainDb),
+                sampleRate: sampleRate,
+                frequency: band.frequency,
+                q: band.q
+            )
+
+            // Calculate complex transfer function
+            let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
+            let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
+            let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
+            let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
+
+            // Phase = atan2(imag, real) for numerator - atan2(imag, real) for denominator
+            let numPhase = atan2(numImag, numReal)
+            let denPhase = atan2(denImag, denReal)
+
+            totalPhase += numPhase - denPhase
+        }
+
+        return totalPhase
+    }
+
     /// Get array of band info for UI
     var bandInfo: [(frequency: Float, gainDb: Float, q: Float, bandType: BandType)] {
         bands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType) }
+    }
+
+    /// Get array of band info including solo state
+    var bandInfoWithSolo: [(frequency: Float, gainDb: Float, q: Float, bandType: BandType, solo: Bool)] {
+        bands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType, $0.solo) }
     }
 }

@@ -8,6 +8,20 @@ struct EQBandState: Equatable, Codable {
     var gainDb: Float
     var q: Float
     var bandType: BandType
+    var solo: Bool = false
+
+    /// Bandwidth in octaves (derived from Q)
+    var bandwidthOctaves: Float {
+        QBandwidthConverter.qToOctaves(q)
+    }
+
+    /// Format Q with optional bandwidth display
+    func formatQ(showBandwidth: Bool = false) -> String {
+        if showBandwidth {
+            return String(format: "%.2f (%.1f oct)", q, bandwidthOctaves)
+        }
+        return String(format: "%.2f", q)
+    }
 }
 
 /// Main observable state for DSP parameters
@@ -199,7 +213,28 @@ final class DSPState: ObservableObject {
 
         for (index, band) in eqBands.enumerated() {
             eq.setBand(index, bandType: band.bandType, frequency: band.frequency, gainDb: band.gainDb, q: band.q)
+            eq.setSolo(index, solo: band.solo)
         }
+    }
+
+    /// Toggle solo for a specific EQ band
+    func toggleEQBandSolo(at index: Int) {
+        guard index >= 0, index < eqBands.count else { return }
+        eqBands[index].solo.toggle()
+        syncEQToChain()
+    }
+
+    /// Clear all EQ band solos
+    func clearAllEQSolo() {
+        for i in 0..<eqBands.count {
+            eqBands[i].solo = false
+        }
+        syncEQToChain()
+    }
+
+    /// Check if any EQ band is soloed
+    var hasEQSolo: Bool {
+        eqBands.contains { $0.solo }
     }
 
     // MARK: - Bypass Toggles
