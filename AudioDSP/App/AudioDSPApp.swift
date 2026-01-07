@@ -53,6 +53,67 @@ struct AudioDSPApp: App {
                     NotificationCenter.default.post(name: .toggleAB, object: nil)
                 }
                 .keyboardShortcut("b", modifiers: .command)
+
+                Divider()
+
+                Button("Bypass All Effects") {
+                    NotificationCenter.default.post(name: .bypassAll, object: nil)
+                }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+            }
+
+            // Effects bypass menu
+            CommandMenu("Effects") {
+                Button("Bypass EQ") {
+                    NotificationCenter.default.post(name: .toggleEQ, object: nil)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+
+                Button("Bypass Compressor") {
+                    NotificationCenter.default.post(name: .toggleCompressor, object: nil)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+
+                Button("Bypass Limiter") {
+                    NotificationCenter.default.post(name: .toggleLimiter, object: nil)
+                }
+                .keyboardShortcut("3", modifiers: .command)
+
+                Divider()
+
+                Button("Bypass Reverb") {
+                    NotificationCenter.default.post(name: .toggleReverb, object: nil)
+                }
+                .keyboardShortcut("4", modifiers: .command)
+
+                Button("Bypass Delay") {
+                    NotificationCenter.default.post(name: .toggleDelay, object: nil)
+                }
+                .keyboardShortcut("5", modifiers: .command)
+
+                Button("Bypass Stereo Widener") {
+                    NotificationCenter.default.post(name: .toggleStereoWidener, object: nil)
+                }
+                .keyboardShortcut("6", modifiers: .command)
+
+                Divider()
+
+                Button("Bypass Bass Enhancer") {
+                    NotificationCenter.default.post(name: .toggleBassEnhancer, object: nil)
+                }
+                .keyboardShortcut("7", modifiers: .command)
+
+                Button("Bypass Vocal Clarity") {
+                    NotificationCenter.default.post(name: .toggleVocalClarity, object: nil)
+                }
+                .keyboardShortcut("8", modifiers: .command)
+
+                Divider()
+
+                Button("Reset All Parameters") {
+                    NotificationCenter.default.post(name: .resetAll, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .option])
             }
 
             // Preset menu
@@ -102,11 +163,28 @@ func showMainWindow() {
 // MARK: - Notification Names
 
 extension Notification.Name {
+    // Edit
     static let undo = Notification.Name("undo")
     static let redo = Notification.Name("redo")
+
+    // Audio
     static let startEngine = Notification.Name("startEngine")
     static let stopEngine = Notification.Name("stopEngine")
     static let toggleAB = Notification.Name("toggleAB")
+    static let bypassAll = Notification.Name("bypassAll")
+
+    // Effects bypass
+    static let toggleEQ = Notification.Name("toggleEQ")
+    static let toggleCompressor = Notification.Name("toggleCompressor")
+    static let toggleLimiter = Notification.Name("toggleLimiter")
+    static let toggleReverb = Notification.Name("toggleReverb")
+    static let toggleDelay = Notification.Name("toggleDelay")
+    static let toggleStereoWidener = Notification.Name("toggleStereoWidener")
+    static let toggleBassEnhancer = Notification.Name("toggleBassEnhancer")
+    static let toggleVocalClarity = Notification.Name("toggleVocalClarity")
+    static let resetAll = Notification.Name("resetAll")
+
+    // Presets
     static let savePreset = Notification.Name("savePreset")
     static let previousPreset = Notification.Name("previousPreset")
     static let nextPreset = Notification.Name("nextPreset")

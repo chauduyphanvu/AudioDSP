@@ -86,6 +86,11 @@ struct ContentView: View {
         .onDisappear {
             audioEngine.stop()
         }
+        .keyboardShortcutHandlers(
+            state: state,
+            audioEngine: audioEngine,
+            presetManager: presetManager
+        )
     }
 
     @ViewBuilder

@@ -183,6 +183,92 @@ struct ScrollWheelHandler: NSViewRepresentable {
     }
 }
 
+// MARK: - Keyboard Shortcut Handlers
+
+struct KeyboardShortcutHandlersModifier: ViewModifier {
+    let state: DSPState
+    let audioEngine: AudioEngine
+    let presetManager: PresetManager
+
+    func body(content: Content) -> some View {
+        content
+            // Edit commands
+            .onReceive(NotificationCenter.default.publisher(for: .undo)) { _ in
+                state.undo()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .redo)) { _ in
+                state.redo()
+            }
+            // Audio commands
+            .onReceive(NotificationCenter.default.publisher(for: .startEngine)) { _ in
+                Task { await audioEngine.start() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .stopEngine)) { _ in
+                audioEngine.stop()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleAB)) { _ in
+                state.switchABSlot()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .bypassAll)) { _ in
+                state.toggleBypassAll()
+            }
+            // Effect bypass commands (split for type-checker)
+            .effectBypassHandlers(state: state)
+            // Preset commands
+            .onReceive(NotificationCenter.default.publisher(for: .previousPreset)) { _ in
+                presetManager.loadPrevious(into: state)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .nextPreset)) { _ in
+                presetManager.loadNext(into: state)
+            }
+    }
+}
+
+struct EffectBypassHandlersModifier: ViewModifier {
+    let state: DSPState
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .toggleEQ)) { _ in
+                state.toggleEQBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleCompressor)) { _ in
+                state.toggleCompressorBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleLimiter)) { _ in
+                state.toggleLimiterBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleReverb)) { _ in
+                state.toggleReverbBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleDelay)) { _ in
+                state.toggleDelayBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleStereoWidener)) { _ in
+                state.toggleStereoWidenerBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleBassEnhancer)) { _ in
+                state.toggleBassEnhancerBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleVocalClarity)) { _ in
+                state.toggleVocalClarityBypass()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .resetAll)) { _ in
+                state.resetAllParameters()
+            }
+    }
+}
+
+extension View {
+    func keyboardShortcutHandlers(state: DSPState, audioEngine: AudioEngine, presetManager: PresetManager) -> some View {
+        modifier(KeyboardShortcutHandlersModifier(state: state, audioEngine: audioEngine, presetManager: presetManager))
+    }
+
+    func effectBypassHandlers(state: DSPState) -> some View {
+        modifier(EffectBypassHandlersModifier(state: state))
+    }
+}
+
 // MARK: - Typography
 
 enum DSPTypography {

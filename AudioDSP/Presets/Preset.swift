@@ -69,6 +69,22 @@ final class PresetManager: ObservableObject {
         loadPresets()
     }
 
+    /// Load the previous preset in the list
+    func loadPrevious(into state: DSPState) {
+        guard !presets.isEmpty else { return }
+        let currentIndex = presets.firstIndex(where: { $0.id == currentPreset?.id }) ?? 0
+        let previousIndex = (currentIndex - 1 + presets.count) % presets.count
+        load(presets[previousIndex], into: state)
+    }
+
+    /// Load the next preset in the list
+    func loadNext(into state: DSPState) {
+        guard !presets.isEmpty else { return }
+        let currentIndex = presets.firstIndex(where: { $0.id == currentPreset?.id }) ?? -1
+        let nextIndex = (currentIndex + 1) % presets.count
+        load(presets[nextIndex], into: state)
+    }
+
     func load(_ preset: Preset, into state: DSPState) {
         currentPreset = preset
 

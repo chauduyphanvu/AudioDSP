@@ -368,6 +368,87 @@ final class DSPState: ObservableObject {
     func toggleBassEnhancerBypass() { registerUndo(); bassEnhancerBypassed.toggle(); syncToChain() }
     func toggleVocalClarityBypass() { registerUndo(); vocalClarityBypassed.toggle(); syncToChain() }
 
+    /// Toggle bypass for all effects at once
+    func toggleBypassAll() {
+        registerUndo()
+        let allBypassed = eqBypassed && compressorBypassed && limiterBypassed &&
+                          reverbBypassed && delayBypassed && stereoWidenerBypassed &&
+                          bassEnhancerBypassed && vocalClarityBypassed
+
+        let newState = !allBypassed
+        eqBypassed = newState
+        compressorBypassed = newState
+        limiterBypassed = newState
+        reverbBypassed = newState
+        delayBypassed = newState
+        stereoWidenerBypassed = newState
+        bassEnhancerBypassed = newState
+        vocalClarityBypassed = newState
+        syncToChain()
+    }
+
+    /// Reset all parameters to defaults
+    func resetAllParameters() {
+        registerUndo()
+
+        // EQ defaults
+        eqBands = [
+            EQBandState(frequency: 80, gainDb: 0, q: 0.707, bandType: .lowShelf),
+            EQBandState(frequency: 250, gainDb: 0, q: 1.0, bandType: .peak),
+            EQBandState(frequency: 1000, gainDb: 0, q: 1.0, bandType: .peak),
+            EQBandState(frequency: 4000, gainDb: 0, q: 1.0, bandType: .peak),
+            EQBandState(frequency: 12000, gainDb: 0, q: 0.707, bandType: .highShelf),
+        ]
+        eqBypassed = false
+
+        // Compressor defaults
+        compressorThreshold = -12
+        compressorRatio = 4
+        compressorAttack = 10
+        compressorRelease = 100
+        compressorMakeup = 0
+        compressorBypassed = false
+
+        // Limiter defaults
+        limiterCeiling = -0.3
+        limiterRelease = 50
+        limiterBypassed = false
+
+        // Reverb defaults
+        reverbRoomSize = 0.5
+        reverbDamping = 0.5
+        reverbWidth = 1.0
+        reverbMix = 0.3
+        reverbBypassed = false
+
+        // Delay defaults
+        delayTime = 250
+        delayFeedback = 0.3
+        delayMix = 0.3
+        delayBypassed = false
+
+        // Stereo widener defaults
+        stereoWidth = 1.0
+        stereoWidenerBypassed = false
+
+        // Bass enhancer defaults
+        bassAmount = 50
+        bassLowFreq = 100
+        bassHarmonics = 30
+        bassEnhancerBypassed = false
+
+        // Vocal clarity defaults
+        vocalClarity = 50
+        vocalAir = 25
+        vocalClarityBypassed = false
+
+        // Output gain defaults
+        outputGain = 0
+        outputGainBypassed = false
+
+        syncToChain()
+    }
+
     // MARK: - Undo/Redo
 
     private func registerUndo() {
