@@ -12,9 +12,32 @@ struct Fader: View {
 
     @State private var isDragging = false
     @State private var isHovered = false
+    @State private var dragStartValue: Float = 0
+    @State private var dragStartY: CGFloat = 0
+
+    private let normalSensitivity: Float = 1.0
+    private let fineSensitivity: Float = 0.1  // 10x finer control with Option key
 
     private var normalizedValue: Float {
         (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+    }
+
+    private var valueRange: Float {
+        range.upperBound - range.lowerBound
+    }
+
+    private func handleDrag(_ gesture: DragGesture.Value, fineMode: Bool) {
+        if !isDragging {
+            isDragging = true
+            dragStartValue = value
+            dragStartY = gesture.startLocation.y
+        }
+
+        let deltaY = Float(dragStartY - gesture.location.y)
+        let sensitivity = (fineMode ? fineSensitivity : normalSensitivity) * valueRange / Float(height)
+        let newValue = dragStartValue + deltaY * sensitivity
+
+        value = min(max(newValue, range.lowerBound), range.upperBound)
     }
 
     private var isActive: Bool {
@@ -65,16 +88,33 @@ struct Fader: View {
                 }
                 .gesture(
                     DragGesture(minimumDistance: 0)
+                        .modifiers(.option)
                         .onChanged { gesture in
-                            isDragging = true
-                            let normalized = 1 - Float(gesture.location.y / height)
-                            let clamped = min(max(normalized, 0), 1)
-                            value = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
+                            handleDrag(gesture, fineMode: true)
                         }
-                        .onEnded { _ in
-                            isDragging = false
-                        }
+                        .onEnded { _ in isDragging = false }
                 )
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            handleDrag(gesture, fineMode: false)
+                        }
+                        .onEnded { _ in isDragging = false }
+                )
+                .onTapGesture(count: 2) {
+                    // Double-click to reset to 0 (or center of range if 0 is not in range)
+                    let defaultValue: Float = range.contains(0) ? 0 : (range.lowerBound + range.upperBound) / 2
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        value = defaultValue
+                    }
+                }
+                .onScrollWheel { delta, modifiers in
+                    let sens: Float = modifiers.contains(.option) ? 0.002 : 0.01
+                    let normalizedDelta = Float(delta) * sens
+                    let newValue = value + normalizedDelta * valueRange
+                    value = min(max(newValue, range.lowerBound), range.upperBound)
+                }
+                .help("Drag or scroll to adjust. Hold ⌥ Option for fine control. Double-click to reset.")
             }
 
             // Label

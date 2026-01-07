@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Pro audio theme colors and styles
@@ -147,6 +148,38 @@ extension View {
 
     func glowEffect(color: Color = DSPTheme.accent, radius: CGFloat = 8) -> some View {
         self.shadow(color: color.opacity(0.5), radius: radius)
+    }
+
+    /// Scroll wheel handler for precise control adjustments
+    func onScrollWheel(_ action: @escaping (_ delta: CGFloat, _ modifiers: NSEvent.ModifierFlags) -> Void) -> some View {
+        self.background(ScrollWheelHandler(action: action))
+    }
+}
+
+/// NSViewRepresentable for capturing scroll wheel events
+struct ScrollWheelHandler: NSViewRepresentable {
+    let action: (_ delta: CGFloat, _ modifiers: NSEvent.ModifierFlags) -> Void
+
+    func makeNSView(context: Context) -> ScrollWheelView {
+        let view = ScrollWheelView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollWheelView, context: Context) {
+        nsView.action = action
+    }
+
+    class ScrollWheelView: NSView {
+        var action: ((_ delta: CGFloat, _ modifiers: NSEvent.ModifierFlags) -> Void)?
+
+        override func scrollWheel(with event: NSEvent) {
+            // Use deltaY for vertical scrolling (most common)
+            let delta = event.deltaY
+            if abs(delta) > 0.01 {
+                action?(delta, event.modifierFlags)
+            }
+        }
     }
 }
 

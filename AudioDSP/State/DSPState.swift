@@ -132,7 +132,58 @@ final class DSPState: ObservableObject {
             .sink { [weak self] _ in self?.syncEQToChain() }
             .store(in: &cancellables)
 
-        // More bindings for other parameters...
+        // Sync output gain changes to DSP chain
+        $outputGain
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncOutputGainToChain() }
+            .store(in: &cancellables)
+
+        // Sync compressor changes
+        Publishers.CombineLatest4($compressorThreshold, $compressorRatio, $compressorAttack, $compressorRelease)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncCompressorToChain() }
+            .store(in: &cancellables)
+
+        $compressorMakeup
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncCompressorToChain() }
+            .store(in: &cancellables)
+
+        // Sync limiter changes
+        Publishers.CombineLatest($limiterCeiling, $limiterRelease)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncLimiterToChain() }
+            .store(in: &cancellables)
+
+        // Sync reverb changes
+        Publishers.CombineLatest4($reverbRoomSize, $reverbDamping, $reverbWidth, $reverbMix)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncReverbToChain() }
+            .store(in: &cancellables)
+
+        // Sync delay changes
+        Publishers.CombineLatest3($delayTime, $delayFeedback, $delayMix)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncDelayToChain() }
+            .store(in: &cancellables)
+
+        // Sync stereo widener changes
+        $stereoWidth
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncStereoWidenerToChain() }
+            .store(in: &cancellables)
+
+        // Sync bass enhancer changes
+        Publishers.CombineLatest3($bassAmount, $bassLowFreq, $bassHarmonics)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncBassEnhancerToChain() }
+            .store(in: &cancellables)
+
+        // Sync vocal clarity changes
+        Publishers.CombineLatest($vocalClarity, $vocalAir)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncVocalClarityToChain() }
+            .store(in: &cancellables)
     }
 
     // MARK: - DSP Sync
@@ -215,6 +266,75 @@ final class DSPState: ObservableObject {
             eq.setBand(index, bandType: band.bandType, frequency: band.frequency, gainDb: band.gainDb, q: band.q)
             eq.setSolo(index, solo: band.solo)
         }
+    }
+
+    private func syncOutputGainToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let gain = chain.getEffect(at: 8) else { return }
+        gain.isBypassed = outputGainBypassed
+        gain.setParameter(0, value: outputGain)
+    }
+
+    private func syncCompressorToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let compressor = chain.getEffect(at: 3) else { return }
+        compressor.isBypassed = compressorBypassed
+        compressor.setParameter(0, value: compressorThreshold)
+        compressor.setParameter(1, value: compressorRatio)
+        compressor.setParameter(2, value: compressorAttack)
+        compressor.setParameter(3, value: compressorRelease)
+        compressor.setParameter(4, value: compressorMakeup)
+    }
+
+    private func syncLimiterToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let limiter = chain.getEffect(at: 7) else { return }
+        limiter.isBypassed = limiterBypassed
+        limiter.setParameter(0, value: limiterCeiling)
+        limiter.setParameter(1, value: limiterRelease)
+    }
+
+    private func syncReverbToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let reverb = chain.getEffect(at: 4) else { return }
+        reverb.isBypassed = reverbBypassed
+        reverb.wetDry = reverbMix
+        reverb.setParameter(0, value: reverbRoomSize)
+        reverb.setParameter(1, value: reverbDamping)
+        reverb.setParameter(2, value: reverbWidth)
+    }
+
+    private func syncDelayToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let delay = chain.getEffect(at: 5) else { return }
+        delay.isBypassed = delayBypassed
+        delay.wetDry = delayMix
+        delay.setParameter(0, value: delayTime)
+        delay.setParameter(1, value: delayFeedback)
+    }
+
+    private func syncStereoWidenerToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let widener = chain.getEffect(at: 6) else { return }
+        widener.isBypassed = stereoWidenerBypassed
+        widener.setParameter(0, value: stereoWidth)
+    }
+
+    private func syncBassEnhancerToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let bass = chain.getEffect(at: 1) else { return }
+        bass.isBypassed = bassEnhancerBypassed
+        bass.setParameter(0, value: bassAmount)
+        bass.setParameter(1, value: bassLowFreq)
+        bass.setParameter(2, value: bassHarmonics)
+    }
+
+    private func syncVocalClarityToChain() {
+        guard let chain = audioEngine?.dspChain,
+              let vocal = chain.getEffect(at: 2) else { return }
+        vocal.isBypassed = vocalClarityBypassed
+        vocal.setParameter(0, value: vocalClarity)
+        vocal.setParameter(1, value: vocalAir)
     }
 
     /// Toggle solo for a specific EQ band

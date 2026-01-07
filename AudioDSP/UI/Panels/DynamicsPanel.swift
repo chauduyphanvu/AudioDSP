@@ -22,21 +22,24 @@ struct DynamicsPanel: View {
                                 value: $state.compressorThreshold,
                                 range: -60...0,
                                 label: "Threshold",
-                                unit: .decibels
+                                unit: .decibels,
+                                defaultValue: -12
                             )
 
                             Knob(
                                 value: $state.compressorRatio,
                                 range: 1...20,
                                 label: "Ratio",
-                                unit: .ratio
+                                unit: .ratio,
+                                defaultValue: 4
                             )
 
                             Knob(
                                 value: $state.compressorMakeup,
                                 range: 0...24,
                                 label: "Makeup",
-                                unit: .decibels
+                                unit: .decibels,
+                                defaultValue: 0
                             )
                         }
 
@@ -46,7 +49,8 @@ struct DynamicsPanel: View {
                                 range: 0.1...100,
                                 label: "Attack",
                                 unit: .milliseconds,
-                                size: 48
+                                size: 48,
+                                defaultValue: 10
                             )
 
                             Knob(
@@ -54,7 +58,8 @@ struct DynamicsPanel: View {
                                 range: 10...1000,
                                 label: "Release",
                                 unit: .milliseconds,
-                                size: 48
+                                size: 48,
+                                defaultValue: 100
                             )
                         }
                     }
@@ -89,14 +94,16 @@ struct DynamicsPanel: View {
                             value: $state.limiterCeiling,
                             range: -12...0,
                             label: "Ceiling",
-                            unit: .decibels
+                            unit: .decibels,
+                            defaultValue: -0.3
                         )
 
                         Knob(
                             value: $state.limiterRelease,
                             range: 10...500,
                             label: "Release",
-                            unit: .milliseconds
+                            unit: .milliseconds,
+                            defaultValue: 50
                         )
                     }
 

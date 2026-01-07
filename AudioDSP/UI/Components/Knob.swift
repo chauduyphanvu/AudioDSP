@@ -157,6 +157,12 @@ struct Knob: View {
                     }
                 }
             }
+            .onScrollWheel { delta, modifiers in
+                let sens: Float = modifiers.contains(.option) ? 0.002 : 0.01
+                let newNormalized = normalizedValue + Float(delta) * sens
+                value = denormalize(newNormalized)
+            }
+            .help("Drag or scroll to adjust. Hold ⌥ Option for fine control." + (defaultValue != nil ? " Double-click to reset." : ""))
 
             // Label
             Text(label)

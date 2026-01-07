@@ -17,28 +17,32 @@ struct EffectsPanel: View {
                         value: $state.reverbRoomSize,
                         range: 0...1,
                         label: "Room",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 0.5
                     )
 
                     Knob(
                         value: $state.reverbDamping,
                         range: 0...1,
                         label: "Damping",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 0.5
                     )
 
                     Knob(
                         value: $state.reverbWidth,
                         range: 0...1,
                         label: "Width",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 1.0
                     )
 
                     Knob(
                         value: $state.reverbMix,
                         range: 0...1,
                         label: "Mix",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 0.3
                     )
                 }
             }
@@ -54,21 +58,24 @@ struct EffectsPanel: View {
                         value: $state.delayTime,
                         range: 1...2000,
                         label: "Time",
-                        unit: .milliseconds
+                        unit: .milliseconds,
+                        defaultValue: 250
                     )
 
                     Knob(
                         value: $state.delayFeedback,
                         range: 0...0.95,
                         label: "Feedback",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 0.3
                     )
 
                     Knob(
                         value: $state.delayMix,
                         range: 0...1,
                         label: "Mix",
-                        unit: .percent
+                        unit: .percent,
+                        defaultValue: 0.3
                     )
                 }
             }
@@ -83,7 +90,8 @@ struct EffectsPanel: View {
                     value: $state.stereoWidth,
                     range: 0...2,
                     label: "Width",
-                    unit: .generic
+                    unit: .generic,
+                    defaultValue: 1.0
                 )
             }
 
@@ -101,7 +109,8 @@ struct EffectsPanel: View {
                             range: 0...100,
                             label: "Amount",
                             unit: .percent,
-                            size: 48
+                            size: 48,
+                            defaultValue: 50
                         )
 
                         HStack(spacing: 12) {
@@ -109,14 +118,16 @@ struct EffectsPanel: View {
                                 value: $state.bassLowFreq,
                                 range: 60...150,
                                 label: "Freq",
-                                unit: .hertz
+                                unit: .hertz,
+                                defaultValue: 100
                             )
 
                             CompactKnob(
                                 value: $state.bassHarmonics,
                                 range: 0...100,
                                 label: "Harmonics",
-                                unit: .percent
+                                unit: .percent,
+                                defaultValue: 30
                             )
                         }
                     }
@@ -133,14 +144,16 @@ struct EffectsPanel: View {
                             value: $state.vocalClarity,
                             range: 0...100,
                             label: "Clarity",
-                            unit: .percent
+                            unit: .percent,
+                            defaultValue: 50
                         )
 
                         Knob(
                             value: $state.vocalAir,
                             range: 0...100,
                             label: "Air",
-                            unit: .percent
+                            unit: .percent,
+                            defaultValue: 25
                         )
                     }
                 }
