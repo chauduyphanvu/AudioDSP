@@ -115,15 +115,13 @@ final class Reverb: Effect, @unchecked Sendable {
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Mix input to mono for reverb processing
-        let input = (left + right) * 0.5
-
-        // Process through parallel comb filters
+        // Process stereo input through parallel comb filters
+        // Each comb filter has different delay times, creating natural decorrelation
         var sumL: Float = 0
         var sumR: Float = 0
 
         for i in 0..<4 {
-            let (outL, outR) = processComb(inputL: input, inputR: input, index: i)
+            let (outL, outR) = processComb(inputL: left, inputR: right, index: i)
             sumL += outL
             sumR += outR
         }

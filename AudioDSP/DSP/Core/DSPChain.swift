@@ -140,7 +140,6 @@ final class DSPChain: @unchecked Sendable {
         let chain = DSPChain(sampleRate: UInt32(sampleRate))
 
         // Add effects in processing order
-        // Note: Gain is placed BEFORE Limiter so it doesn't defeat the limiter's ceiling
         chain.addEffect(ParametricEQ(sampleRate: sampleRate))
         chain.addEffect(BassEnhancer(sampleRate: sampleRate))
         chain.addEffect(VocalClarity(sampleRate: sampleRate))
@@ -148,8 +147,8 @@ final class DSPChain: @unchecked Sendable {
         chain.addEffect(Reverb(sampleRate: sampleRate))
         chain.addEffect(Delay(sampleRate: sampleRate))
         chain.addEffect(StereoWidener())
-        chain.addEffect(Gain())
         chain.addEffect(Limiter(sampleRate: sampleRate))
+        chain.addEffect(Gain())
 
         return chain
     }

@@ -1,10 +1,11 @@
 import Foundation
 
-/// Dynamic range compressor with soft knee
+/// Dynamic range compressor with smooth soft knee
+/// Uses proper quadratic interpolation for continuous gain curve and slope
 final class Compressor: Effect, @unchecked Sendable {
     private var thresholdDb: Float = -12
     private var ratio: Float = 4
-    private let kneeDb: Float = 6
+    private var kneeDb: Float = 6
     private var makeupGainDb: Float = 0
 
     // Envelope follower for gain reduction smoothing (operates in dB domain)
@@ -39,22 +40,24 @@ final class Compressor: Effect, @unchecked Sendable {
         didSet { updateCoefficients(attackMs: attackMs, releaseMs: releaseMs) }
     }
 
+    /// Compute gain reduction in dB using smooth soft knee
+    /// Returns the OUTPUT level in dB for a given INPUT level in dB
+    /// The gain reduction is: outputDb - inputDb
     @inline(__always)
-    private func computeGain(_ inputDb: Float) -> Float {
-        let overThreshold = inputDb - thresholdDb
+    private func computeOutputDb(_ inputDb: Float) -> Float {
+        let halfKnee = kneeDb / 2.0
 
-        // Soft knee computation
-        if kneeDb > 0 && overThreshold > -kneeDb / 2 && overThreshold < kneeDb / 2 {
-            let kneeFactor = (overThreshold + kneeDb / 2) / kneeDb
-            let kneeGain = kneeFactor * kneeFactor * kneeDb / 2 * (1 / ratio - 1)
-            return kneeGain + makeupGainDb
-        }
-
-        if overThreshold <= 0 {
-            return makeupGainDb
+        if kneeDb <= 0 || inputDb < thresholdDb - halfKnee {
+            // Below knee region: no compression
+            return inputDb
+        } else if inputDb > thresholdDb + halfKnee {
+            // Above knee region: full compression
+            return thresholdDb + (inputDb - thresholdDb) / ratio
         } else {
-            let gainReduction = overThreshold * (1 - 1 / ratio)
-            return -gainReduction + makeupGainDb
+            // Inside knee region: quadratic interpolation
+            let x = inputDb - (thresholdDb - halfKnee)
+            let compressionAmount = (1.0 - 1.0 / ratio) / (2.0 * kneeDb)
+            return inputDb - compressionAmount * x * x
         }
     }
 
@@ -64,23 +67,26 @@ final class Compressor: Effect, @unchecked Sendable {
         let inputPeak = stereoPeak(left, right)
         let inputDb = linearToDb(inputPeak)
 
-        // Compute instantaneous gain reduction in dB domain
-        let targetGainDb = computeGain(inputDb)
-        let targetReductionDb = targetGainDb - makeupGainDb  // Negative when compressing
+        // Compute the target output level
+        let targetOutputDb = computeOutputDb(inputDb)
+
+        // Gain reduction is the difference between desired output and input
+        // (negative when compressing)
+        let targetReductionDb = targetOutputDb - inputDb
 
         // Smooth gain reduction in dB domain
         // Use attack when gain needs to decrease (more compression), release when increasing
         let coeff = targetReductionDb < gainEnvelopeDb ? attackCoeff : releaseCoeff
         gainEnvelopeDb = coeff * gainEnvelopeDb + (1.0 - coeff) * targetReductionDb
 
-        // Flush denormals (in linear domain equivalent, ~-300dB)
+        // Flush denormals
         if abs(gainEnvelopeDb) < 1e-15 {
             gainEnvelopeDb = 0
         }
 
         gainReductionDb = gainEnvelopeDb
 
-        // Apply smoothed gain + makeup
+        // Apply smoothed gain reduction + makeup gain
         let finalGainDb = gainEnvelopeDb + makeupGainDb
         let gainLinear = dbToLinear(finalGainDb)
 
@@ -99,6 +105,7 @@ final class Compressor: Effect, @unchecked Sendable {
             ParameterDescriptor("Attack", min: 0.1, max: 100, defaultValue: 10, unit: .milliseconds),
             ParameterDescriptor("Release", min: 10, max: 1000, defaultValue: 100, unit: .milliseconds),
             ParameterDescriptor("Makeup", min: 0, max: 24, defaultValue: 0, unit: .decibels),
+            ParameterDescriptor("Knee", min: 0, max: 24, defaultValue: 6, unit: .decibels),
         ]
     }
 
@@ -109,6 +116,7 @@ final class Compressor: Effect, @unchecked Sendable {
         case 2: return attackMs
         case 3: return releaseMs
         case 4: return makeupGainDb
+        case 5: return kneeDb
         default: return 0
         }
     }
@@ -120,6 +128,7 @@ final class Compressor: Effect, @unchecked Sendable {
         case 2: attackMs = min(max(value, 0.1), 100)
         case 3: releaseMs = min(max(value, 10), 1000)
         case 4: makeupGainDb = min(max(value, 0), 24)
+        case 5: kneeDb = min(max(value, 0), 24)
         default: break
         }
     }
