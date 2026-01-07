@@ -17,6 +17,10 @@ final class Reverb: Effect, @unchecked Sendable {
     private var allpassBuffersR: [[Float]]
     private var allpassIndices: [Int]
 
+    // Damping low-pass filter state (one per comb filter, per channel)
+    private var dampStateL: [Float]
+    private var dampStateR: [Float]
+
     private var roomSize: Float = 0.5 {
         didSet { updateFeedback() }
     }
@@ -45,6 +49,13 @@ final class Reverb: Effect, @unchecked Sendable {
         allpassBuffersL = allpassSizes.map { [Float](repeating: 0, count: $0) }
         allpassBuffersR = allpassSizes.map { [Float](repeating: 0, count: $0) }
         allpassIndices = [Int](repeating: 0, count: 2)
+
+        // Initialize damping filter states (one per comb filter)
+        dampStateL = [Float](repeating: 0, count: 4)
+        dampStateR = [Float](repeating: 0, count: 4)
+
+        // Initialize feedback from roomSize (didSet not called during init)
+        updateFeedback()
     }
 
     private func updateFeedback() {
@@ -63,10 +74,18 @@ final class Reverb: Effect, @unchecked Sendable {
         let outR = combBuffersR[index][idx]
 
         let feedback = combFeedback[index]
-        let damp = damping
 
-        combBuffersL[index][idx] = inputL + outL * feedback * (1.0 - damp)
-        combBuffersR[index][idx] = inputR + outR * feedback * (1.0 - damp)
+        // Apply one-pole low-pass filter in feedback path for high-frequency absorption
+        // Higher damping = more HF absorption (like soft room surfaces)
+        // filtered = damp * previous + (1 - damp) * current
+        let filteredL = damping * dampStateL[index] + (1.0 - damping) * outL
+        let filteredR = damping * dampStateR[index] + (1.0 - damping) * outR
+        dampStateL[index] = filteredL
+        dampStateR[index] = filteredR
+
+        // Feed filtered signal back into the delay line
+        combBuffersL[index][idx] = inputL + filteredL * feedback
+        combBuffersR[index][idx] = inputR + filteredR * feedback
 
         combIndices[index] = (idx + 1) % combBuffersL[index].count
 
@@ -82,11 +101,12 @@ final class Reverb: Effect, @unchecked Sendable {
 
         let g: Float = 0.5
 
-        let outL = bufferedL - inputL
-        let outR = bufferedR - inputR
+        // Correct allpass topology: out = buffer - g*input, buffer = input + g*out
+        let outL = bufferedL - g * inputL
+        let outR = bufferedR - g * inputR
 
-        allpassBuffersL[index][idx] = inputL + bufferedL * g
-        allpassBuffersR[index][idx] = inputR + bufferedR * g
+        allpassBuffersL[index][idx] = inputL + g * outL
+        allpassBuffersR[index][idx] = inputR + g * outR
 
         allpassIndices[index] = (idx + 1) % allpassBuffersL[index].count
 
@@ -124,16 +144,27 @@ final class Reverb: Effect, @unchecked Sendable {
     }
 
     func reset() {
+        // Zero existing buffers without allocation (safe for audio thread)
         for i in 0..<combBuffersL.count {
-            combBuffersL[i] = [Float](repeating: 0, count: combBuffersL[i].count)
-            combBuffersR[i] = [Float](repeating: 0, count: combBuffersR[i].count)
+            for j in 0..<combBuffersL[i].count {
+                combBuffersL[i][j] = 0
+                combBuffersR[i][j] = 0
+            }
         }
         for i in 0..<allpassBuffersL.count {
-            allpassBuffersL[i] = [Float](repeating: 0, count: allpassBuffersL[i].count)
-            allpassBuffersR[i] = [Float](repeating: 0, count: allpassBuffersR[i].count)
+            for j in 0..<allpassBuffersL[i].count {
+                allpassBuffersL[i][j] = 0
+                allpassBuffersR[i][j] = 0
+            }
         }
-        combIndices = [Int](repeating: 0, count: 4)
-        allpassIndices = [Int](repeating: 0, count: 2)
+        for i in 0..<4 {
+            combIndices[i] = 0
+            dampStateL[i] = 0
+            dampStateR[i] = 0
+        }
+        for i in 0..<2 {
+            allpassIndices[i] = 0
+        }
     }
 
     var parameters: [ParameterDescriptor] {

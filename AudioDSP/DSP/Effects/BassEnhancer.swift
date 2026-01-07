@@ -1,15 +1,25 @@
 import Foundation
 
-/// Psychoacoustic bass enhancement using sub-harmonic synthesis
+/// Bass enhancement using harmonic saturation and psychoacoustic processing
+/// Adds upper harmonics to low frequencies, making bass more audible on small speakers
 final class BassEnhancer: Effect, @unchecked Sendable {
     private var amount: Float = 0.5    // 0.0 - 1.0 (overall intensity)
     private var lowFreq: Float = 100   // Hz (cutoff for bass extraction)
     private var harmonics: Float = 0.3 // 0.0 - 1.0 (saturation amount)
 
-    // One-pole low-pass filter state
-    private var lpStateL: Float = 0
-    private var lpStateR: Float = 0
+    // 2nd-order Butterworth low-pass filter state (12 dB/oct for better bass isolation)
+    private var lp1StateL: Float = 0
+    private var lp1StateR: Float = 0
+    private var lp2StateL: Float = 0
+    private var lp2StateR: Float = 0
     private var lpCoeff: Float = 0
+
+    // DC blocking high-pass filter state (removes DC offset from saturation)
+    private var dcStateL: Float = 0
+    private var dcStateR: Float = 0
+    private var dcPrevInL: Float = 0
+    private var dcPrevInR: Float = 0
+    private let dcCoeff: Float  // ~20Hz high-pass
 
     private let sampleRate: Float
     var isBypassed: Bool = false
@@ -19,48 +29,51 @@ final class BassEnhancer: Effect, @unchecked Sendable {
 
     init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
+        // DC blocker coefficient for ~20Hz cutoff (clamped for low sample rates)
+        self.dcCoeff = max(0.9, 1.0 - (Float.pi * 2.0 * 20.0 / sampleRate))
         updateFilter()
     }
 
     private func updateFilter() {
-        // One-pole low-pass coefficient: coeff = exp(-2*pi*fc/fs)
+        // One-pole low-pass coefficient (cascaded twice for 2nd order)
         let omega = 2.0 * Float.pi * lowFreq / sampleRate
         lpCoeff = exp(-omega)
     }
 
-    /// Soft saturation using tanh
+    /// Soft saturation using tanh - generates odd harmonics (3rd, 5th, etc.)
     @inline(__always)
     private func saturate(_ x: Float, drive: Float) -> Float {
         tanh(x * (1.0 + drive * 3.0))
     }
 
-    /// Generate sub-harmonic (octave down) via half-wave rectification
+    /// DC blocking filter to remove offset introduced by saturation
     @inline(__always)
-    private func subHarmonic(_ x: Float) -> Float {
-        // Half-wave rectification creates even harmonics including octave down
-        (x + abs(x)) * 0.5
+    private func dcBlock(input: Float, prevIn: inout Float, state: inout Float) -> Float {
+        // y[n] = x[n] - x[n-1] + coeff * y[n-1]
+        let output = input - prevIn + dcCoeff * state
+        prevIn = input
+        state = output
+        return output
     }
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Extract bass using one-pole low-pass filter
-        lpStateL = lpCoeff * lpStateL + (1.0 - lpCoeff) * left
-        lpStateR = lpCoeff * lpStateR + (1.0 - lpCoeff) * right
+        // Extract bass using cascaded one-pole filters (2nd order, 12 dB/oct)
+        lp1StateL = lpCoeff * lp1StateL + (1.0 - lpCoeff) * left
+        lp1StateR = lpCoeff * lp1StateR + (1.0 - lpCoeff) * right
+        lp2StateL = lpCoeff * lp2StateL + (1.0 - lpCoeff) * lp1StateL
+        lp2StateR = lpCoeff * lp2StateR + (1.0 - lpCoeff) * lp1StateR
 
-        let bassL = lpStateL
-        let bassR = lpStateR
+        let bassL = lp2StateL
+        let bassR = lp2StateR
 
-        // Apply saturation to generate harmonics
-        let saturatedL = saturate(bassL, drive: harmonics)
-        let saturatedR = saturate(bassR, drive: harmonics)
+        // Apply saturation to generate upper harmonics (makes bass audible on small speakers)
+        var enhancedL = saturate(bassL, drive: harmonics)
+        var enhancedR = saturate(bassR, drive: harmonics)
 
-        // Generate sub-harmonics
-        let subL = subHarmonic(saturatedL)
-        let subR = subHarmonic(saturatedR)
-
-        // Mix enhanced bass with saturation and sub-harmonics
-        let enhancedL = saturatedL * 0.6 + subL * 0.4
-        let enhancedR = saturatedR * 0.6 + subR * 0.4
+        // Remove DC offset introduced by saturation
+        enhancedL = dcBlock(input: enhancedL, prevIn: &dcPrevInL, state: &dcStateL)
+        enhancedR = dcBlock(input: enhancedR, prevIn: &dcPrevInR, state: &dcStateR)
 
         // Add enhanced bass to original signal
         let outL = left + enhancedL * amount
@@ -70,8 +83,14 @@ final class BassEnhancer: Effect, @unchecked Sendable {
     }
 
     func reset() {
-        lpStateL = 0
-        lpStateR = 0
+        lp1StateL = 0
+        lp1StateR = 0
+        lp2StateL = 0
+        lp2StateR = 0
+        dcStateL = 0
+        dcStateR = 0
+        dcPrevInL = 0
+        dcPrevInR = 0
     }
 
     var parameters: [ParameterDescriptor] {

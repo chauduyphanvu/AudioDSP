@@ -7,7 +7,12 @@ final class Compressor: Effect, @unchecked Sendable {
     private let kneeDb: Float = 6
     private var makeupGainDb: Float = 0
 
-    private var envelope: EnvelopeFollower
+    // Envelope follower for gain reduction smoothing (operates in dB domain)
+    private var gainEnvelopeDb: Float = 0
+    private var attackCoeff: Float = 0
+    private var releaseCoeff: Float = 0
+    private var sampleRate: Float
+
     var isBypassed: Bool = false
     var wetDry: Float = 1.0
 
@@ -17,12 +22,21 @@ final class Compressor: Effect, @unchecked Sendable {
     let name = "Compressor"
 
     init(sampleRate: Float = 48000) {
-        self.envelope = EnvelopeFollower(
-            sampleRate: sampleRate,
-            attackMs: 10,
-            releaseMs: 100,
-            mode: .attackRelease
-        )
+        self.sampleRate = sampleRate
+        updateCoefficients(attackMs: 10, releaseMs: 100)
+    }
+
+    private func updateCoefficients(attackMs: Float, releaseMs: Float) {
+        // Time constant: coeff = exp(-1 / (time_ms * 0.001 * sampleRate))
+        attackCoeff = attackMs > 0 ? expf(-1.0 / (attackMs * 0.001 * sampleRate)) : 0
+        releaseCoeff = releaseMs > 0 ? expf(-1.0 / (releaseMs * 0.001 * sampleRate)) : 0
+    }
+
+    private var attackMs: Float = 10 {
+        didSet { updateCoefficients(attackMs: attackMs, releaseMs: releaseMs) }
+    }
+    private var releaseMs: Float = 100 {
+        didSet { updateCoefficients(attackMs: attackMs, releaseMs: releaseMs) }
     }
 
     @inline(__always)
@@ -46,24 +60,35 @@ final class Compressor: Effect, @unchecked Sendable {
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Peak detection (stereo linked)
+        // Peak detection (stereo linked) and convert to dB
         let inputPeak = stereoPeak(left, right)
+        let inputDb = linearToDb(inputPeak)
 
-        // Envelope follower
-        let envelopeValue = envelope.process(inputPeak)
+        // Compute instantaneous gain reduction in dB domain
+        let targetGainDb = computeGain(inputDb)
+        let targetReductionDb = targetGainDb - makeupGainDb  // Negative when compressing
 
-        let envelopeDb = linearToDb(envelopeValue)
-        let gainDb = computeGain(envelopeDb)
+        // Smooth gain reduction in dB domain
+        // Use attack when gain needs to decrease (more compression), release when increasing
+        let coeff = targetReductionDb < gainEnvelopeDb ? attackCoeff : releaseCoeff
+        gainEnvelopeDb = coeff * gainEnvelopeDb + (1.0 - coeff) * targetReductionDb
 
-        gainReductionDb = gainDb - makeupGainDb
+        // Flush denormals (in linear domain equivalent, ~-300dB)
+        if abs(gainEnvelopeDb) < 1e-15 {
+            gainEnvelopeDb = 0
+        }
 
-        let gainLinear = dbToLinear(gainDb)
+        gainReductionDb = gainEnvelopeDb
+
+        // Apply smoothed gain + makeup
+        let finalGainDb = gainEnvelopeDb + makeupGainDb
+        let gainLinear = dbToLinear(finalGainDb)
 
         return (left * gainLinear, right * gainLinear)
     }
 
     func reset() {
-        envelope.reset()
+        gainEnvelopeDb = 0
         gainReductionDb = 0
     }
 
@@ -81,8 +106,8 @@ final class Compressor: Effect, @unchecked Sendable {
         switch index {
         case 0: return thresholdDb
         case 1: return ratio
-        case 2: return envelope.attackMs
-        case 3: return envelope.releaseMs
+        case 2: return attackMs
+        case 3: return releaseMs
         case 4: return makeupGainDb
         default: return 0
         }
@@ -92,8 +117,8 @@ final class Compressor: Effect, @unchecked Sendable {
         switch index {
         case 0: thresholdDb = min(max(value, -60), 0)
         case 1: ratio = min(max(value, 1), 20)
-        case 2: envelope.setAttackMs(min(max(value, 0.1), 100))
-        case 3: envelope.setReleaseMs(min(max(value, 10), 1000))
+        case 2: attackMs = min(max(value, 0.1), 100)
+        case 3: releaseMs = min(max(value, 10), 1000)
         case 4: makeupGainDb = min(max(value, 0), 24)
         default: break
         }
