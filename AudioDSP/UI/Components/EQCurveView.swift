@@ -1,22 +1,36 @@
 import SwiftUI
 
-/// EQ frequency response curve visualization
+/// EQ frequency response curve visualization with optional spectrum overlay
 struct EQCurveView: View {
     var bands: [(frequency: Float, gainDb: Float, q: Float, bandType: BandType)]
     var selectedBand: Int?
     var onBandSelected: ((Int) -> Void)?
     var height: CGFloat = 150
+    var sampleRate: Float = 48000  // Actual sample rate from audio engine
+    var spectrumData: [Float] = []  // FFT magnitudes in dB for overlay
+    var fftSize: Int = 2048
 
     private let minFreq: Float = 20
     private let maxFreq: Float = 20000
     private let minDb: Float = -24
     private let maxDb: Float = 24
+    private let spectrumMinDb: Float = -80
+    private let spectrumMaxDb: Float = 0
 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 // Grid
                 eqGrid(size: geometry.size)
+
+                // Spectrum analyzer overlay (behind EQ curve)
+                if !spectrumData.isEmpty {
+                    spectrumOverlay(size: geometry.size)
+                        .fill(DSPTheme.spectrumGradient.opacity(0.25))
+
+                    spectrumOverlay(size: geometry.size)
+                        .stroke(DSPTheme.spectrumLine.opacity(0.3), lineWidth: 1)
+                }
 
                 // Frequency response curve
                 responseCurve(size: geometry.size)
@@ -145,8 +159,7 @@ struct EQCurveView: View {
     }
 
     private func calculateBandMagnitude(at freq: Float, bandFreq: Float, gainDb: Float, q: Float, bandType: BandType) -> Float {
-        // Simplified magnitude response calculation
-        let sampleRate: Float = 48000
+        // Magnitude response calculation using actual sample rate
         let omega = 2.0 * Float.pi * freq / sampleRate
         let cosOmega = cos(omega)
 
@@ -170,6 +183,46 @@ struct EQCurveView: View {
         let denMag = sqrt(denReal * denReal + denImag * denImag)
 
         return numMag / max(denMag, 1e-10)
+    }
+
+    /// Draw spectrum analyzer overlay behind EQ curve
+    private func spectrumOverlay(size: CGSize) -> Path {
+        Path { path in
+            guard !spectrumData.isEmpty else { return }
+
+            let binCount = spectrumData.count
+
+            // Start from bottom left
+            path.move(to: CGPoint(x: 0, y: size.height))
+
+            var startedLine = false
+            for i in 0..<binCount {
+                let freq = Float(i) * sampleRate / Float(fftSize)
+
+                // Skip frequencies outside range
+                guard freq >= minFreq, freq <= maxFreq else { continue }
+
+                let x = freqToX(freq, width: size.width)
+                // Map spectrum dB (-80 to 0) to EQ display range (-24 to +24)
+                let spectrumDb = spectrumData[i]
+                let mappedDb = (spectrumDb - spectrumMinDb) / (spectrumMaxDb - spectrumMinDb) * (maxDb - minDb) + minDb
+                let y = dbToY(mappedDb, height: size.height)
+
+                if !startedLine {
+                    path.move(to: CGPoint(x: x, y: size.height))
+                    path.addLine(to: CGPoint(x: x, y: y))
+                    startedLine = true
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+
+            // Close path at bottom
+            if startedLine {
+                path.addLine(to: CGPoint(x: size.width, y: size.height))
+                path.closeSubpath()
+            }
+        }
     }
 
     private func freqToX(_ freq: Float, width: CGFloat) -> CGFloat {

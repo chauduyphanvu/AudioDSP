@@ -3,6 +3,7 @@ import SwiftUI
 /// Parametric EQ panel with curve visualization and band controls
 struct EQPanel: View {
     @ObservedObject var state: DSPState
+    var sampleRate: Float = 48000  // From audio engine
     @State private var selectedBand: Int = 0
 
     var body: some View {
@@ -17,11 +18,13 @@ struct EQPanel: View {
                 Spacer()
             }
 
-            // EQ Curve visualization
+            // EQ Curve visualization with spectrum overlay
             EQCurveView(
                 bands: state.eqBands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType) },
                 selectedBand: selectedBand,
-                onBandSelected: { selectedBand = $0 }
+                onBandSelected: { selectedBand = $0 },
+                sampleRate: sampleRate,
+                spectrumData: state.spectrumData
             )
             .frame(height: 140)
 
@@ -50,62 +53,67 @@ struct BandControl: View {
     var isSelected: Bool
     var onSelect: () -> Void
 
+    @State private var isDraggingGain = false
+    @State private var dragStartGain: Float = 0
+    @State private var dragStartY: CGFloat = 0
+
+    private let gainSliderHeight: CGFloat = 72  // Taller for better precision (~0.67 dB per pixel)
+
     private var bandName: String {
         ["LOW", "LO-MID", "MID", "HI-MID", "HIGH"][index]
     }
 
+    private var defaultFrequency: Float {
+        [80, 250, 1000, 4000, 12000][index]
+    }
+
+    private var defaultQ: Float {
+        index == 0 || index == 4 ? 0.707 : 1.0  // Shelves vs peaks
+    }
+
     var body: some View {
         VStack(spacing: 6) {
-            // Band label
-            Text(bandName)
-                .font(DSPTypography.caption)
-                .foregroundColor(isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary)
-                .onTapGesture(perform: onSelect)
+            // Band type selector and label
+            Menu {
+                Button("Low Shelf") { band.bandType = .lowShelf }
+                Button("Peak") { band.bandType = .peak }
+                Button("High Shelf") { band.bandType = .highShelf }
+                Button("Low Pass") { band.bandType = .lowPass }
+                Button("High Pass") { band.bandType = .highPass }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(bandName)
+                        .font(DSPTypography.caption)
+                        .foregroundColor(isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundColor(DSPTheme.textTertiary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .onTapGesture(perform: onSelect)
 
-            // Frequency knob
+            // Band type indicator
+            Text(bandTypeLabel)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundColor(DSPTheme.textTertiary)
+
+            // Frequency knob with logarithmic scaling
             CompactKnob(
                 value: $band.frequency,
                 range: 20...20000,
                 label: "Freq",
-                unit: .hertz
+                unit: .hertz,
+                scaling: .logarithmic,
+                defaultValue: defaultFrequency
             )
 
-            // Gain slider
+            // Gain slider with fine adjustment
             VStack(spacing: 2) {
-                // Mini gain bar
-                GeometryReader { geometry in
-                    let normalizedGain = (band.gainDb + 24) / 48
-                    let centerY = geometry.size.height / 2
-
-                    ZStack {
-                        // Track
-                        Rectangle()
-                            .fill(DSPTheme.cardBackground)
-                            .frame(width: 4)
-
-                        // Gain bar
-                        Rectangle()
-                            .fill(DSPTheme.eqBandColors[index])
-                            .frame(width: 4, height: abs(CGFloat(normalizedGain - 0.5)) * geometry.size.height)
-                            .position(
-                                x: geometry.size.width / 2,
-                                y: band.gainDb >= 0 ? centerY - (CGFloat(normalizedGain - 0.5) * geometry.size.height / 2) : centerY + (CGFloat(0.5 - normalizedGain) * geometry.size.height / 2)
-                            )
-
-                        // Center line
-                        Rectangle()
-                            .fill(DSPTheme.textTertiary)
-                            .frame(width: 8, height: 1)
-                            .position(x: geometry.size.width / 2, y: centerY)
-                    }
-                }
-                .frame(width: 20, height: 50)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { gesture in
-                            let normalized = 1 - Float(gesture.location.y / 50)
-                            band.gainDb = (normalized * 48) - 24
-                        }
+                GainSlider(
+                    gainDb: $band.gainDb,
+                    color: DSPTheme.eqBandColors[index],
+                    height: gainSliderHeight
                 )
 
                 Text(String(format: "%.1f dB", band.gainDb))
@@ -118,7 +126,8 @@ struct BandControl: View {
                 value: $band.q,
                 range: 0.1...10,
                 label: "Q",
-                unit: .generic
+                unit: .generic,
+                defaultValue: defaultQ
             )
         }
         .padding(8)
@@ -128,6 +137,113 @@ struct BandControl: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(isSelected ? DSPTheme.eqBandColors[index].opacity(0.5) : Color.clear, lineWidth: 1)
         )
+    }
+
+    private var bandTypeLabel: String {
+        switch band.bandType {
+        case .lowShelf: return "LS"
+        case .highShelf: return "HS"
+        case .peak: return "PK"
+        case .lowPass: return "LP"
+        case .highPass: return "HP"
+        }
+    }
+}
+
+/// Vertical gain slider with Option key fine adjustment and double-click reset
+struct GainSlider: View {
+    @Binding var gainDb: Float
+    let color: Color
+    var height: CGFloat = 72
+
+    @State private var isDragging = false
+    @State private var dragStartGain: Float = 0
+    @State private var dragStartY: CGFloat = 0
+
+    private let normalSensitivity: Float = 48.0 / 72.0  // Full range over slider height
+    private let fineSensitivity: Float = 48.0 / 720.0  // 10x finer with Option key
+
+    private var normalizedGain: Float {
+        (gainDb + 24) / 48
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let centerY = geometry.size.height / 2
+
+            ZStack {
+                // Track
+                Rectangle()
+                    .fill(DSPTheme.cardBackground)
+                    .frame(width: 4)
+
+                // Gain bar
+                Rectangle()
+                    .fill(color)
+                    .frame(width: 4, height: abs(CGFloat(normalizedGain - 0.5)) * geometry.size.height)
+                    .position(
+                        x: geometry.size.width / 2,
+                        y: gainDb >= 0
+                            ? centerY - (CGFloat(normalizedGain - 0.5) * geometry.size.height / 2)
+                            : centerY + (CGFloat(0.5 - normalizedGain) * geometry.size.height / 2)
+                    )
+
+                // Center line (0 dB)
+                Rectangle()
+                    .fill(DSPTheme.textTertiary)
+                    .frame(width: 10, height: 1)
+                    .position(x: geometry.size.width / 2, y: centerY)
+
+                // Drag handle
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                    .position(
+                        x: geometry.size.width / 2,
+                        y: CGFloat(1 - normalizedGain) * geometry.size.height
+                    )
+                    .shadow(color: color.opacity(isDragging ? 0.6 : 0), radius: 4)
+            }
+        }
+        .frame(width: 20, height: height)
+        .contentShape(Rectangle())
+        // Fine adjustment with Option key
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .modifiers(.option)
+                .onChanged { gesture in
+                    handleDrag(gesture, fineMode: true)
+                }
+                .onEnded { _ in isDragging = false }
+        )
+        // Normal adjustment
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { gesture in
+                    handleDrag(gesture, fineMode: false)
+                }
+                .onEnded { _ in isDragging = false }
+        )
+        // Double-click to reset to 0 dB
+        .onTapGesture(count: 2) {
+            withAnimation(.easeOut(duration: 0.15)) {
+                gainDb = 0
+            }
+        }
+    }
+
+    private func handleDrag(_ gesture: DragGesture.Value, fineMode: Bool) {
+        if !isDragging {
+            isDragging = true
+            dragStartGain = gainDb
+            dragStartY = gesture.startLocation.y
+        }
+
+        let sensitivity = fineMode ? fineSensitivity : normalSensitivity
+        let deltaY = Float(dragStartY - gesture.location.y)
+        let newGain = dragStartGain + deltaY * sensitivity
+
+        gainDb = min(max(newGain, -24), 24)
     }
 }
 
@@ -182,7 +298,7 @@ struct EffectHeader: View {
 }
 
 #Preview {
-    EQPanel(state: DSPState())
+    EQPanel(state: DSPState(), sampleRate: 48000)
         .frame(width: 600)
         .padding()
         .background(DSPTheme.background)

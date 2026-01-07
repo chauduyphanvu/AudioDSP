@@ -91,8 +91,8 @@ struct ContentView: View {
     @ViewBuilder
     private var effectsContent: some View {
         VStack(spacing: 16) {
-            // EQ Panel
-            EQPanel(state: state)
+            // EQ Panel with spectrum overlay
+            EQPanel(state: state, sampleRate: Float(audioEngine.sampleRate))
 
             HStack(alignment: .top, spacing: 16) {
                 // Dynamics panel (left)

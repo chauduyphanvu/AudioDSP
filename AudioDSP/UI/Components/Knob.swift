@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// Scaling mode for knob values
+enum KnobScaling {
+    case linear
+    case logarithmic  // For frequency parameters (20Hz-20kHz)
+}
+
 /// Skeuomorphic rotary knob control
 struct Knob: View {
     @Binding var value: Float
@@ -7,16 +13,42 @@ struct Knob: View {
     let label: String
     var unit: ParameterUnit = .generic
     var size: CGFloat = 56
+    var scaling: KnobScaling = .linear
+    var defaultValue: Float? = nil  // For double-click reset
 
     @State private var isDragging = false
     @State private var isHovered = false
-    @State private var dragStartValue: Float = 0
+    @State private var dragStartNormalized: Float = 0
     @State private var dragStartLocation: CGPoint = .zero
+    @State private var modifierPressed = false
 
     private let sensitivity: Float = 0.005
+    private let fineSensitivity: Float = 0.001  // For Option key fine adjustment
 
+    /// Convert actual value to normalized (0-1) based on scaling mode
     private var normalizedValue: Float {
-        (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+        switch scaling {
+        case .linear:
+            return (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+        case .logarithmic:
+            // Log scale: normalized = log(value/min) / log(max/min)
+            let logMin = log(range.lowerBound)
+            let logMax = log(range.upperBound)
+            let logVal = log(max(value, range.lowerBound))
+            return (logVal - logMin) / (logMax - logMin)
+        }
+    }
+
+    /// Convert normalized (0-1) to actual value based on scaling mode
+    private func denormalize(_ normalized: Float) -> Float {
+        let clamped = min(max(normalized, 0), 1)
+        switch scaling {
+        case .linear:
+            return range.lowerBound + clamped * (range.upperBound - range.lowerBound)
+        case .logarithmic:
+            // Log scale: value = min * (max/min)^normalized
+            return range.lowerBound * powf(range.upperBound / range.lowerBound, clamped)
+        }
     }
 
     private var rotation: Angle {
@@ -26,6 +58,20 @@ struct Knob: View {
 
     private var isActive: Bool {
         isDragging || isHovered
+    }
+
+    private func handleDrag(_ gesture: DragGesture.Value, fineMode: Bool) {
+        if !isDragging {
+            isDragging = true
+            dragStartNormalized = normalizedValue
+            dragStartLocation = gesture.startLocation
+        }
+
+        let sens = fineMode ? fineSensitivity : sensitivity
+        let delta = Float(dragStartLocation.y - gesture.location.y) * sens
+        let newNormalized = dragStartNormalized + delta
+
+        value = denormalize(newNormalized)
     }
 
     var body: some View {
@@ -86,23 +132,31 @@ struct Knob: View {
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .modifiers(.option)
                     .onChanged { gesture in
-                        if !isDragging {
-                            isDragging = true
-                            dragStartValue = value
-                            dragStartLocation = gesture.startLocation
-                        }
-
-                        let delta = Float(dragStartLocation.y - gesture.location.y) * sensitivity
-                        let rangeSize = range.upperBound - range.lowerBound
-                        let newValue = dragStartValue + delta * rangeSize
-
-                        value = min(max(newValue, range.lowerBound), range.upperBound)
+                        handleDrag(gesture, fineMode: true)
                     }
                     .onEnded { _ in
                         isDragging = false
                     }
             )
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        handleDrag(gesture, fineMode: false)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
+            .onTapGesture(count: 2) {
+                // Double-click to reset to default
+                if let defaultVal = defaultValue {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        value = defaultVal
+                    }
+                }
+            }
 
             // Label
             Text(label)
@@ -124,9 +178,11 @@ struct CompactKnob: View {
     let range: ClosedRange<Float>
     let label: String
     var unit: ParameterUnit = .generic
+    var scaling: KnobScaling = .linear
+    var defaultValue: Float? = nil
 
     var body: some View {
-        Knob(value: $value, range: range, label: label, unit: unit, size: 40)
+        Knob(value: $value, range: range, label: label, unit: unit, size: 40, scaling: scaling, defaultValue: defaultValue)
     }
 }
 
@@ -136,21 +192,25 @@ struct CompactKnob: View {
             value: .constant(0.5),
             range: 0...1,
             label: "Mix",
-            unit: .percent
+            unit: .percent,
+            defaultValue: 0.5
         )
 
         Knob(
             value: .constant(-6.0),
             range: -24...24,
             label: "Gain",
-            unit: .decibels
+            unit: .decibels,
+            defaultValue: 0
         )
 
         CompactKnob(
             value: .constant(1000.0),
             range: 20...20000,
             label: "Freq",
-            unit: .hertz
+            unit: .hertz,
+            scaling: .logarithmic,
+            defaultValue: 1000
         )
     }
     .padding(40)
