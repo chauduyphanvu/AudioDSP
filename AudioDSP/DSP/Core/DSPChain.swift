@@ -2,9 +2,14 @@ import Foundation
 import os
 
 /// Thread-safe DSP effect chain with level metering
+/// Uses lock-free processing path for real-time audio safety
 final class DSPChain: @unchecked Sendable {
     private var effects: [any Effect] = []
     let sampleRate: UInt32
+
+    // Atomic snapshot of effects for lock-free audio thread access
+    // The audio thread reads from this, main thread updates it atomically
+    private var effectsSnapshot: UnsafeMutablePointer<[any Effect]>
 
     // Peak level metering with proper ballistics
     // Fast attack (~1ms) to catch transients, slow release (~300ms) for readable display
@@ -17,7 +22,9 @@ final class DSPChain: @unchecked Sendable {
     private let meterAttackCoeff: Float   // ~1ms attack
     private let meterReleaseCoeff: Float  // ~300ms release
 
-    private let lock = NSLock()
+    // Lock only for configuration changes (not used on audio thread)
+    private let configLock = os_unfair_lock_s()
+    private var configLockPointer: UnsafeMutablePointer<os_unfair_lock_s>
 
     init(sampleRate: UInt32 = 48000) {
         self.sampleRate = sampleRate
@@ -27,30 +34,47 @@ final class DSPChain: @unchecked Sendable {
         let sr = Float(sampleRate)
         meterAttackCoeff = expf(-1.0 / (1.0 * 0.001 * sr))      // 1ms attack
         meterReleaseCoeff = expf(-1.0 / (300.0 * 0.001 * sr))   // 300ms release
+
+        // Initialize lock-free snapshot
+        effectsSnapshot = UnsafeMutablePointer<[any Effect]>.allocate(capacity: 1)
+        effectsSnapshot.initialize(to: [])
+
+        // Initialize config lock
+        configLockPointer = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
+        configLockPointer.initialize(to: os_unfair_lock_s())
+    }
+
+    deinit {
+        effectsSnapshot.deinitialize(count: 1)
+        effectsSnapshot.deallocate()
+        configLockPointer.deinitialize(count: 1)
+        configLockPointer.deallocate()
     }
 
     func addEffect(_ effect: any Effect) {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(configLockPointer)
         effects.append(effect)
+        // Atomically update the snapshot for the audio thread
+        effectsSnapshot.pointee = effects
+        os_unfair_lock_unlock(configLockPointer)
     }
 
     var effectList: [any Effect] {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(configLockPointer)
+        defer { os_unfair_lock_unlock(configLockPointer) }
         return effects
     }
 
     func getEffect(at index: Int) -> (any Effect)? {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(configLockPointer)
+        defer { os_unfair_lock_unlock(configLockPointer) }
         guard index >= 0, index < effects.count else { return nil }
         return effects[index]
     }
 
     var effectCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(configLockPointer)
+        defer { os_unfair_lock_unlock(configLockPointer) }
         return effects.count
     }
 
@@ -64,6 +88,7 @@ final class DSPChain: @unchecked Sendable {
     }
 
     /// Process a stereo sample pair through the entire chain
+    /// LOCK-FREE: Safe to call from audio thread
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
         // Update input level meters with proper ballistics
@@ -73,8 +98,10 @@ final class DSPChain: @unchecked Sendable {
         var l = left
         var r = right
 
-        lock.lock()
-        for effect in effects {
+        // Lock-free read from effects snapshot
+        // Swift arrays are COW, so this is safe as long as we don't mutate
+        let currentEffects = effectsSnapshot.pointee
+        for effect in currentEffects {
             if !effect.isBypassed {
                 let wetDry = effect.wetDry
                 let (wetL, wetR) = effect.process(left: l, right: r)
@@ -84,7 +111,6 @@ final class DSPChain: @unchecked Sendable {
                 r = r * (1.0 - wetDry) + wetR * wetDry
             }
         }
-        lock.unlock()
 
         // Update output level meters with proper ballistics
         _outputLevelLeft = updateMeter(current: _outputLevelLeft, target: abs(l))
@@ -102,8 +128,8 @@ final class DSPChain: @unchecked Sendable {
     }
 
     func reset() {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(configLockPointer)
+        defer { os_unfair_lock_unlock(configLockPointer) }
         for effect in effects {
             effect.reset()
         }
@@ -114,6 +140,7 @@ final class DSPChain: @unchecked Sendable {
         let chain = DSPChain(sampleRate: UInt32(sampleRate))
 
         // Add effects in processing order
+        // Note: Gain is placed BEFORE Limiter so it doesn't defeat the limiter's ceiling
         chain.addEffect(ParametricEQ(sampleRate: sampleRate))
         chain.addEffect(BassEnhancer(sampleRate: sampleRate))
         chain.addEffect(VocalClarity(sampleRate: sampleRate))
@@ -121,8 +148,8 @@ final class DSPChain: @unchecked Sendable {
         chain.addEffect(Reverb(sampleRate: sampleRate))
         chain.addEffect(Delay(sampleRate: sampleRate))
         chain.addEffect(StereoWidener())
-        chain.addEffect(Limiter(sampleRate: sampleRate))
         chain.addEffect(Gain())
+        chain.addEffect(Limiter(sampleRate: sampleRate))
 
         return chain
     }

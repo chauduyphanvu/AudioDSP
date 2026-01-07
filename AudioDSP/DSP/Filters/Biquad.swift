@@ -102,33 +102,87 @@ struct BiquadCoefficients {
             a2: a2 / a0
         )
     }
+
+    /// Linear interpolation between two coefficient sets
+    @inline(__always)
+    func interpolated(to target: BiquadCoefficients, factor: Float) -> BiquadCoefficients {
+        let inv = 1.0 - factor
+        return BiquadCoefficients(
+            b0: b0 * inv + target.b0 * factor,
+            b1: b1 * inv + target.b1 * factor,
+            b2: b2 * inv + target.b2 * factor,
+            a1: a1 * inv + target.a1 * factor,
+            a2: a2 * inv + target.a2 * factor
+        )
+    }
 }
 
-/// Direct Form 2 Transposed biquad filter implementation
+/// Direct Form 2 Transposed biquad filter implementation with coefficient smoothing
+/// Interpolates coefficients over ~5ms to avoid zipper noise during parameter changes
 final class Biquad: @unchecked Sendable {
-    private var coeffs: BiquadCoefficients
+    private var currentCoeffs: BiquadCoefficients
+    private var targetCoeffs: BiquadCoefficients
     private var z1: Float = 0
     private var z2: Float = 0
 
-    init(coefficients: BiquadCoefficients = BiquadCoefficients()) {
-        self.coeffs = coefficients
+    // Smoothing state
+    private var smoothingCounter: Int = 0
+    private let smoothingSamples: Int  // ~5ms at given sample rate
+
+    init(coefficients: BiquadCoefficients = BiquadCoefficients(), sampleRate: Float = 48000) {
+        self.currentCoeffs = coefficients
+        self.targetCoeffs = coefficients
+        // ~5ms smoothing time for coefficient interpolation
+        self.smoothingSamples = Int(sampleRate * 0.005)
     }
 
+    /// Update target coefficients - will smoothly interpolate to new values
     func updateCoefficients(_ newCoeffs: BiquadCoefficients) {
-        self.coeffs = newCoeffs
+        targetCoeffs = newCoeffs
+        smoothingCounter = smoothingSamples
+    }
+
+    /// Update coefficients immediately without smoothing (use sparingly)
+    func setCoefficientsImmediate(_ newCoeffs: BiquadCoefficients) {
+        currentCoeffs = newCoeffs
+        targetCoeffs = newCoeffs
+        smoothingCounter = 0
     }
 
     @inline(__always)
     func process(_ input: Float) -> Float {
-        let output = coeffs.b0 * input + z1
-        z1 = coeffs.b1 * input - coeffs.a1 * output + z2
-        z2 = coeffs.b2 * input - coeffs.a2 * output
+        // Update coefficients with smoothing if needed
+        if smoothingCounter > 0 {
+            let factor = 1.0 - Float(smoothingCounter) / Float(smoothingSamples)
+            currentCoeffs = currentCoeffs.interpolated(to: targetCoeffs, factor: factor)
+            smoothingCounter -= 1
+
+            // Snap to target when done
+            if smoothingCounter == 0 {
+                currentCoeffs = targetCoeffs
+            }
+        }
+
+        let output = currentCoeffs.b0 * input + z1
+        z1 = currentCoeffs.b1 * input - currentCoeffs.a1 * output + z2
+        z2 = currentCoeffs.b2 * input - currentCoeffs.a2 * output
+
+        // Flush denormals
+        if abs(z1) < 1e-15 { z1 = 0 }
+        if abs(z2) < 1e-15 { z2 = 0 }
+
         return output
     }
 
     func reset() {
         z1 = 0
         z2 = 0
+        smoothingCounter = 0
+        currentCoeffs = targetCoeffs
+    }
+
+    var isSmoothing: Bool {
+        smoothingCounter > 0
     }
 }
 
@@ -151,7 +205,7 @@ enum BandType: Int, Codable, Sendable {
     }
 }
 
-/// Single EQ band with stereo processing
+/// Single EQ band with stereo processing and parameter smoothing
 final class EQBand: @unchecked Sendable {
     private var filterLeft: Biquad
     private var filterRight: Biquad
@@ -175,8 +229,8 @@ final class EQBand: @unchecked Sendable {
             q: q
         )
 
-        self.filterLeft = Biquad(coefficients: coeffs)
-        self.filterRight = Biquad(coefficients: coeffs)
+        self.filterLeft = Biquad(coefficients: coeffs, sampleRate: sampleRate)
+        self.filterRight = Biquad(coefficients: coeffs, sampleRate: sampleRate)
     }
 
     @inline(__always)
@@ -197,6 +251,7 @@ final class EQBand: @unchecked Sendable {
             q: q
         )
 
+        // Use smoothed coefficient update to avoid zipper noise
         filterLeft.updateCoefficients(coeffs)
         filterRight.updateCoefficients(coeffs)
     }

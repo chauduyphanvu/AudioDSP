@@ -10,9 +10,14 @@ final class AudioEngine: ObservableObject {
     // dspChain and fftAnalyzer need internal access for UI
     nonisolated(unsafe) let dspChain: DSPChain
     nonisolated(unsafe) let fftAnalyzer: FFTAnalyzer
-    nonisolated(unsafe) fileprivate let ringBuffer = RingBuffer<Float>(capacity: 48000 * 2)
+    nonisolated(unsafe) fileprivate let ringBuffer = StereoRingBuffer(capacity: 48000 * 2)
     nonisolated(unsafe) fileprivate var inputUnit: AudioUnit?
     nonisolated(unsafe) private var outputUnit: AudioUnit?
+
+    // Pre-allocated buffer for input callback to avoid real-time allocation
+    // Size for max expected buffer: 4096 frames * 2 channels
+    nonisolated(unsafe) fileprivate let inputBuffer: UnsafeMutablePointer<Float>
+    private let inputBufferCapacity: Int = 4096 * 2
 
     // Published levels for UI metering
     @Published var inputLevelLeft: Float = 0
@@ -31,6 +36,15 @@ final class AudioEngine: ObservableObject {
     init() {
         dspChain = DSPChain.createDefault(sampleRate: Float(sampleRate))
         fftAnalyzer = FFTAnalyzer(fftSize: 2048)
+
+        // Pre-allocate input buffer to avoid allocation on audio thread
+        inputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: inputBufferCapacity)
+        inputBuffer.initialize(repeating: 0, count: inputBufferCapacity)
+    }
+
+    deinit {
+        inputBuffer.deinitialize(count: inputBufferCapacity)
+        inputBuffer.deallocate()
     }
 
     func start() async {
@@ -385,29 +399,29 @@ private func inputCallback(
 ) -> OSStatus {
     let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
 
-    // Allocate buffer for input data
+    // Use pre-allocated buffer instead of allocating on audio thread
+    let frameCount = Int(inNumberFrames)
+    let data = engine.inputBuffer
+
+    // Set up buffer list pointing to pre-allocated memory
     var bufferList = AudioBufferList(
         mNumberBuffers: 1,
         mBuffers: AudioBuffer(
             mNumberChannels: 2,
             mDataByteSize: inNumberFrames * 2 * UInt32(MemoryLayout<Float>.size),
-            mData: nil
+            mData: UnsafeMutableRawPointer(data)
         )
     )
 
-    let dataSize = Int(inNumberFrames) * 2 * MemoryLayout<Float>.size
-    let data = UnsafeMutablePointer<Float>.allocate(capacity: Int(inNumberFrames) * 2)
-    defer { data.deallocate() }
-
-    bufferList.mBuffers.mData = UnsafeMutableRawPointer(data)
-
-    // Render input audio
+    // Render input audio into pre-allocated buffer
     let status = AudioUnitRender(engine.inputUnit!, ioActionFlags, inTimeStamp, 1, inNumberFrames, &bufferList)
     guard status == noErr else { return status }
 
-    // Push to ring buffer (interleaved stereo)
-    for i in 0..<Int(inNumberFrames) * 2 {
-        engine.ringBuffer.push(data[i])
+    // Push interleaved stereo samples to ring buffer
+    for frame in 0..<frameCount {
+        let left = data[frame * 2]
+        let right = data[frame * 2 + 1]
+        engine.ringBuffer.push(left: left, right: right)
     }
 
     return noErr
@@ -433,11 +447,10 @@ private func outputCallback(
     let frameCount = Int(inNumberFrames)
 
     for frame in 0..<frameCount {
-        // Pull from ring buffer (interleaved L, R)
-        let left = engine.ringBuffer.pop() ?? 0.0
-        let right = engine.ringBuffer.pop() ?? 0.0
+        // Pull from ring buffer (with graceful underrun handling)
+        let (left, right) = engine.ringBuffer.pop()
 
-        // Process through DSP chain
+        // Process through DSP chain (lock-free)
         let (procL, procR) = engine.dspChain.process(left: left, right: right)
 
         // Write interleaved output
