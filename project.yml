@@ -1,0 +1,54 @@
+name: AudioDSP
+options:
+  bundleIdPrefix: com.audiodsp
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    PRODUCT_NAME: "Audio DSP"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    INFOPLIST_KEY_CFBundleDisplayName: "Audio DSP"
+    INFOPLIST_KEY_NSHumanReadableCopyright: ""
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: "Audio DSP needs microphone access to capture audio from virtual audio devices like BlackHole."
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_SANDBOX: NO
+
+targets:
+  AudioDSP:
+    type: application
+    platform: macOS
+    sources:
+      - path: AudioDSP
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        INFOPLIST_FILE: AudioDSP/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.audiodsp.app
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+    entitlements:
+      path: AudioDSP/AudioDSP.entitlements
+      properties:
+        com.apple.security.audio-input: true
+        com.apple.security.device.audio-input: true
+
+schemes:
+  AudioDSP:
+    build:
+      targets:
+        AudioDSP: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release
