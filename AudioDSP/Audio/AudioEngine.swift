@@ -25,6 +25,9 @@ final class AudioEngine: ObservableObject {
     @Published var outputLevelLeft: Float = 0
     @Published var outputLevelRight: Float = 0
 
+    // Published spectrum data for visualization
+    @Published var spectrumData: [Float] = []
+
     @Published var isRunning: Bool = false
     @Published var statusMessage: String = "Ready"
 
@@ -217,6 +220,9 @@ final class AudioEngine: ObservableObject {
         inputLevelRight = inputLevelRight * 0.8 + inR * 0.2
         outputLevelLeft = outputLevelLeft * 0.8 + outL * 0.2
         outputLevelRight = outputLevelRight * 0.8 + outR * 0.2
+
+        // Update spectrum data from FFT analyzer
+        spectrumData = fftAnalyzer.analyze()
     }
 
     #if os(macOS)

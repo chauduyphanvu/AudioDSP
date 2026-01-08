@@ -9,6 +9,7 @@ struct MasterPanel: View {
     @State private var showSavePreset = false
     @State private var newPresetName = ""
     @State private var showSpectrum = true
+    @State private var spectrumMode: SpectrumDisplayMode = .curve
 
     var body: some View {
         VStack(spacing: 16) {
@@ -90,16 +91,24 @@ struct MasterPanel: View {
 
                 ToolbarDivider()
 
-                // View toggle
-                ToolbarIconButton(
-                    icon: showSpectrum ? "waveform" : "waveform.slash",
-                    tooltip: showSpectrum ? "Hide Spectrum" : "Show Spectrum",
-                    isActive: showSpectrum
-                ) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showSpectrum.toggle()
+                // Spectrum controls
+                HStack(spacing: 4) {
+                    ToolbarIconButton(
+                        icon: showSpectrum ? "waveform" : "waveform.slash",
+                        tooltip: showSpectrum ? "Hide Spectrum" : "Show Spectrum",
+                        isActive: showSpectrum
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showSpectrum.toggle()
+                        }
+                    }
+
+                    if showSpectrum {
+                        SpectrumModeToggle(mode: $spectrumMode)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
                 }
+                .animation(.easeInOut(duration: 0.2), value: showSpectrum)
 
                 ToolbarDivider()
 
@@ -124,8 +133,9 @@ struct MasterPanel: View {
             // Spectrum analyzer
             if showSpectrum {
                 SpectrumView(
-                    magnitudes: state.spectrumData,
-                    height: 80
+                    magnitudes: audioEngine.spectrumData,
+                    height: 80,
+                    displayMode: spectrumMode
                 )
                 .padding(.horizontal, 16)
                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
@@ -261,6 +271,54 @@ struct ABSlotButton: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundColor(isSelected ? DSPTheme.textPrimary : (isHovered ? DSPTheme.textSecondary : DSPTheme.textTertiary))
                 .frame(width: 26, height: 22)
+                .background(isSelected ? DSPTheme.accent : (isHovered ? DSPTheme.cardBackground : Color.clear))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+/// Spectrum display mode toggle
+struct SpectrumModeToggle: View {
+    @Binding var mode: SpectrumDisplayMode
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(SpectrumDisplayMode.allCases, id: \.self) { displayMode in
+                SpectrumModeButton(
+                    icon: displayMode == .curve ? "waveform.path" : "chart.bar.fill",
+                    isSelected: mode == displayMode
+                ) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        mode = displayMode
+                    }
+                }
+            }
+        }
+        .padding(2)
+        .background(DSPTheme.surfaceBackground.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .help("Switch spectrum display mode")
+    }
+}
+
+/// Individual spectrum mode button
+struct SpectrumModeButton: View {
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(isSelected ? DSPTheme.textPrimary : (isHovered ? DSPTheme.textSecondary : DSPTheme.textTertiary))
+                .frame(width: 24, height: 22)
                 .background(isSelected ? DSPTheme.accent : (isHovered ? DSPTheme.cardBackground : Color.clear))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }

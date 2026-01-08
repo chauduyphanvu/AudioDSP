@@ -102,7 +102,7 @@ struct ContentView: View {
     private var effectsContent: some View {
         VStack(spacing: 16) {
             // EQ Panel with spectrum overlay
-            EQPanel(state: state, sampleRate: Float(audioEngine.sampleRate))
+            EQPanel(state: state, sampleRate: Float(audioEngine.sampleRate), spectrumData: audioEngine.spectrumData)
 
             HStack(alignment: .top, spacing: 16) {
                 // Dynamics panel (left)

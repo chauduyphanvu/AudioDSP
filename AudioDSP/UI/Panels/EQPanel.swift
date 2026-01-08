@@ -4,6 +4,7 @@ import SwiftUI
 struct EQPanel: View {
     @ObservedObject var state: DSPState
     var sampleRate: Float = 48000
+    var spectrumData: [Float] = []
     @State private var selectedBand: Int = 0
     @State private var showPhaseResponse: Bool = false
 
@@ -64,7 +65,7 @@ struct EQPanel: View {
                     state.eqBands[index].gainDb = gain
                 },
                 sampleRate: sampleRate,
-                spectrumData: state.spectrumData,
+                spectrumData: spectrumData,
                 showPhaseResponse: showPhaseResponse
             )
             .frame(height: 140)
