@@ -58,6 +58,9 @@ final class LinearPhaseEQ: @unchecked Sendable {
     private let updateQueue = DispatchQueue(label: "linearPhaseEQ.kernelUpdate", qos: .userInitiated)
     private var isUpdating: Bool = false
 
+    // Reset flag for deferred reset on audio thread
+    private let resetFlag = AtomicFlag()
+
     /// Latency in samples
     var latencySamples: Int { fftSize / 2 }
 
@@ -324,6 +327,9 @@ final class LinearPhaseEQ: @unchecked Sendable {
     /// Returns the output with latency of fftSize/2 samples
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
+        // Handle deferred reset on audio thread
+        performResetIfNeeded()
+
         // Add input to buffer
         inputBufferL[writePosition] = left
         inputBufferR[writePosition] = right
@@ -412,8 +418,15 @@ final class LinearPhaseEQ: @unchecked Sendable {
         }
     }
 
+    /// Request reset - actual reset happens on audio thread to avoid priority inversion
     func reset() {
-        os_unfair_lock_lock(&kernelSwapLock)
+        resetFlag.set()
+    }
+
+    /// Perform deferred reset on audio thread (no lock contention)
+    @inline(__always)
+    private func performResetIfNeeded() {
+        guard resetFlag.testAndClear() else { return }
         vDSP_vclr(&inputBufferL, 1, vDSP_Length(fftSize))
         vDSP_vclr(&inputBufferR, 1, vDSP_Length(fftSize))
         vDSP_vclr(&outputBufferL, 1, vDSP_Length(fftSize))
@@ -421,7 +434,6 @@ final class LinearPhaseEQ: @unchecked Sendable {
         vDSP_vclr(&overlapBufferL, 1, vDSP_Length(hopSize))
         vDSP_vclr(&overlapBufferR, 1, vDSP_Length(hopSize))
         writePosition = 0
-        os_unfair_lock_unlock(&kernelSwapLock)
     }
 
     /// Get latency in milliseconds

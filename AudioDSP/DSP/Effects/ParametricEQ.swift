@@ -23,91 +23,55 @@ enum EQProcessingMode: Int, Codable, CaseIterable, Sendable {
 
 /// Extended EQ band with additional features
 final class ExtendedEQBand: @unchecked Sendable {
-    // Core filters (biquad-based)
+    // Stereo filter pairs
     private var biquadLeft: Biquad
     private var biquadRight: Biquad
-
-    // SVF filters (alternative topology)
     private var svfLeft: StateVariableFilter
     private var svfRight: StateVariableFilter
-
-    // Cascaded filters for different slopes
     private var cascadedLeft: CascadedFilter?
     private var cascadedRight: CascadedFilter?
 
-    // Current settings
-    private var params: EQBandParams
-    private var topology: FilterTopology = .biquad
-    private var slope: FilterSlope = .slope12dB
-    private var msMode: MSMode = .stereo
+    // Thread-safe state using new utilities
+    private let state: ThreadSafeValue<BandState>
+    private let enabledFlag: AtomicBool
+    private let sampleRate: Float
 
-    // Dynamic EQ
-    private var dynamicsEnabled: Bool = false
-    private var dynamicsThreshold: Float = -12
-    private var dynamicsRatio: Float = 2.0
-    private var dynamicsAttackCoeff: Float = 0.01
-    private var dynamicsReleaseCoeff: Float = 0.001
+    // Dynamic EQ envelope state (audio thread only, no lock needed)
     private var envelopeL: Float = 0
     private var envelopeR: Float = 0
     private var sidechainFilter: Biquad
 
-    // Thread safety
-    private var paramsLock = os_unfair_lock()
-    private let enabledFlagPtr: UnsafeMutablePointer<Int32>
-    private let sampleRate: Float
-
-    var enabled: Bool {
-        OSAtomicAdd32(0, enabledFlagPtr) != 0
+    /// Internal state bundle for atomic access
+    private struct BandState {
+        var params: EQBandParams
+        var topology: FilterTopology = .biquad
+        var slope: FilterSlope = .slope12dB
+        var msMode: MSMode = .stereo
+        var dynamicsEnabled: Bool = false
+        var dynamicsThreshold: Float = -12
+        var dynamicsRatio: Float = 2.0
+        var dynamicsAttackCoeff: Float = 0.01
+        var dynamicsReleaseCoeff: Float = 0.001
     }
 
-    // Public accessors
-    var bandType: BandType {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.bandType
-    }
-    var frequency: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.frequency
-    }
-    var gainDb: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.gainDb
-    }
-    var q: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.q
-    }
-    var solo: Bool {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.solo
-    }
-    var currentSlope: FilterSlope {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return slope
-    }
-    var currentMSMode: MSMode {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return msMode
-    }
-    var currentTopology: FilterTopology {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return topology
-    }
+    var enabled: Bool { enabledFlag.value }
+
+    // Public accessors using ThreadSafeValue
+    var bandType: BandType { state.read().params.bandType }
+    var frequency: Float { state.read().params.frequency }
+    var gainDb: Float { state.read().params.gainDb }
+    var q: Float { state.read().params.q }
+    var solo: Bool { state.read().params.solo }
+    var currentSlope: FilterSlope { state.read().slope }
+    var currentMSMode: MSMode { state.read().msMode }
+    var currentTopology: FilterTopology { state.read().topology }
 
     init(sampleRate: Float, bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
         self.sampleRate = sampleRate
-        self.params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
 
-        self.enabledFlagPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        enabledFlagPtr.initialize(to: 1)
+        let initialParams = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
+        self.state = ThreadSafeValue(BandState(params: initialParams))
+        self.enabledFlag = AtomicBool(true)
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
@@ -118,11 +82,9 @@ final class ExtendedEQBand: @unchecked Sendable {
 
         self.biquadLeft = Biquad(params: biquadParams, sampleRate: sampleRate)
         self.biquadRight = Biquad(params: biquadParams, sampleRate: sampleRate)
-
         self.svfLeft = StateVariableFilter(sampleRate: sampleRate)
         self.svfRight = StateVariableFilter(sampleRate: sampleRate)
 
-        // Sidechain filter for dynamic EQ (bandpass centered on band frequency)
         self.sidechainFilter = Biquad(params: BiquadParams(
             filterType: .peak(gainDb: 0),
             frequency: frequency,
@@ -133,12 +95,9 @@ final class ExtendedEQBand: @unchecked Sendable {
         updateSVFParams()
     }
 
-    deinit {
-        enabledFlagPtr.deinitialize(count: 1)
-        enabledFlagPtr.deallocate()
-    }
-
     private func updateSVFParams() {
+        let currentState = state.read()
+        let params = currentState.params
         let svfMode: SVFMode
         switch params.bandType {
         case .lowShelf: svfMode = .lowShelf
@@ -153,19 +112,19 @@ final class ExtendedEQBand: @unchecked Sendable {
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        guard OSAtomicAdd32(0, enabledFlagPtr) != 0 else { return (left, right) }
+        guard enabledFlag.value else { return (left, right) }
 
-        os_unfair_lock_lock(&paramsLock)
-        let currentTopology = topology
-        let currentSlope = slope
-        let currentMsMode = msMode
-        let currentBandType = params.bandType
-        let dynEnabled = dynamicsEnabled
-        let dynThreshold = dynamicsThreshold
-        let dynRatio = dynamicsRatio
-        let attackCoeff = dynamicsAttackCoeff
-        let releaseCoeff = dynamicsReleaseCoeff
-        os_unfair_lock_unlock(&paramsLock)
+        // Read all state atomically
+        let currentState = state.read()
+        let currentTopology = currentState.topology
+        let currentSlope = currentState.slope
+        let currentMsMode = currentState.msMode
+        let currentBandType = currentState.params.bandType
+        let dynEnabled = currentState.dynamicsEnabled
+        let dynThreshold = currentState.dynamicsThreshold
+        let dynRatio = currentState.dynamicsRatio
+        let attackCoeff = currentState.dynamicsAttackCoeff
+        let releaseCoeff = currentState.dynamicsReleaseCoeff
 
         var l = left
         var r = right
@@ -232,9 +191,9 @@ final class ExtendedEQBand: @unchecked Sendable {
     }
 
     func update(bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
-        os_unfair_lock_lock(&paramsLock)
-        params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q, solo: params.solo)
-        os_unfair_lock_unlock(&paramsLock)
+        state.modify { s in
+            s.params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q, solo: s.params.solo)
+        }
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
@@ -247,13 +206,11 @@ final class ExtendedEQBand: @unchecked Sendable {
         biquadRight.updateParameters(biquadParams)
         updateSVFParams()
 
-        // Update cascaded filters if needed
         if FilterSlope.appliesTo(bandType) {
             cascadedLeft?.updateParameters(frequency: frequency, q: q, isHighPass: bandType == .highPass)
             cascadedRight?.updateParameters(frequency: frequency, q: q, isHighPass: bandType == .highPass)
         }
 
-        // Update sidechain filter for dynamic EQ
         sidechainFilter.updateParameters(BiquadParams(
             filterType: .peak(gainDb: 0),
             frequency: frequency,
@@ -263,12 +220,11 @@ final class ExtendedEQBand: @unchecked Sendable {
     }
 
     func setSlope(_ newSlope: FilterSlope) {
-        os_unfair_lock_lock(&paramsLock)
-        slope = newSlope
-        let currentParams = params
-        os_unfair_lock_unlock(&paramsLock)
+        let currentParams: EQBandParams = state.modifyAndReturn { s in
+            s.slope = newSlope
+            return s.params
+        }
 
-        // Create or update cascaded filters
         if FilterSlope.appliesTo(currentParams.bandType) {
             cascadedLeft = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
             cascadedRight = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
@@ -286,46 +242,37 @@ final class ExtendedEQBand: @unchecked Sendable {
     }
 
     func setTopology(_ newTopology: FilterTopology) {
-        os_unfair_lock_lock(&paramsLock)
-        topology = newTopology
-        os_unfair_lock_unlock(&paramsLock)
+        state.modify { $0.topology = newTopology }
     }
 
     func setMSMode(_ newMode: MSMode) {
-        os_unfair_lock_lock(&paramsLock)
-        msMode = newMode
-        os_unfair_lock_unlock(&paramsLock)
+        state.modify { $0.msMode = newMode }
     }
 
     func setDynamics(enabled: Bool, threshold: Float, ratio: Float, attackMs: Float, releaseMs: Float) {
-        os_unfair_lock_lock(&paramsLock)
-        dynamicsEnabled = enabled
-        dynamicsThreshold = threshold
-        dynamicsRatio = max(1, ratio)
-        dynamicsAttackCoeff = 1.0 - exp(-1.0 / (sampleRate * attackMs / 1000))
-        dynamicsReleaseCoeff = 1.0 - exp(-1.0 / (sampleRate * releaseMs / 1000))
-        os_unfair_lock_unlock(&paramsLock)
+        state.modify { s in
+            s.dynamicsEnabled = enabled
+            s.dynamicsThreshold = threshold
+            s.dynamicsRatio = max(1, ratio)
+            s.dynamicsAttackCoeff = 1.0 - exp(-1.0 / (sampleRate * attackMs / 1000))
+            s.dynamicsReleaseCoeff = 1.0 - exp(-1.0 / (sampleRate * releaseMs / 1000))
+        }
     }
 
     func setSolo(_ solo: Bool) {
-        os_unfair_lock_lock(&paramsLock)
-        params = EQBandParams(
-            bandType: params.bandType,
-            frequency: params.frequency,
-            gainDb: params.gainDb,
-            q: params.q,
-            solo: solo
-        )
-        os_unfair_lock_unlock(&paramsLock)
+        state.modify { s in
+            s.params = EQBandParams(
+                bandType: s.params.bandType,
+                frequency: s.params.frequency,
+                gainDb: s.params.gainDb,
+                q: s.params.q,
+                solo: solo
+            )
+        }
     }
 
     func setEnabled(_ enabled: Bool) {
-        let newValue: Int32 = enabled ? 1 : 0
-        while true {
-            let oldValue = OSAtomicAdd32(0, enabledFlagPtr)
-            if oldValue == newValue { break }
-            if OSAtomicCompareAndSwap32(oldValue, newValue, enabledFlagPtr) { break }
-        }
+        enabledFlag.value = enabled
         if enabled {
             reset()
         }
@@ -353,28 +300,17 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     let name = "Parametric EQ"
 
-    // Saturation processor (replaces old soft clipper)
     private var saturation: Saturation
-
-    // Linear phase processor
     private var linearPhaseEQ: LinearPhaseEQ?
-    private var processingMode: EQProcessingMode = .minimumPhase
-    private var modeLock = os_unfair_lock()
-
-    // Atomic solo bitmask
-    private let soloMaskPtr: UnsafeMutablePointer<UInt32>
+    private let processingModeState: ThreadSafeValue<EQProcessingMode>
+    private let soloMask: AtomicBitmask
 
     init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
-
-        // Initialize saturation processor
         self.saturation = Saturation()
+        self.processingModeState = ThreadSafeValue(.minimumPhase)
+        self.soloMask = AtomicBitmask(0)
 
-        // Allocate atomic solo mask
-        self.soloMaskPtr = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
-        soloMaskPtr.initialize(to: 0)
-
-        // Default 5-band layout
         bands = [
             ExtendedEQBand(sampleRate: sampleRate, bandType: .lowShelf, frequency: 80, gainDb: 0, q: 0.707),
             ExtendedEQBand(sampleRate: sampleRate, bandType: .peak, frequency: 250, gainDb: 0, q: 1.0),
@@ -384,37 +320,10 @@ final class ParametricEQ: Effect, @unchecked Sendable {
         ]
     }
 
-    deinit {
-        soloMaskPtr.deinitialize(count: 1)
-        soloMaskPtr.deallocate()
-    }
-
-    /// Get current solo mask atomically (thread-safe for audio thread)
-    @inline(__always)
-    private func getSoloMask() -> UInt32 {
-        let signed = OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(soloMaskPtr)))
-        return UInt32(bitPattern: signed)
-    }
-
-    /// Set solo bit for a band atomically
-    private func setSoloBit(_ index: Int, _ value: Bool) {
-        let bit = UInt32(1 << index)
-        if value {
-            OSAtomicOr32(bit, UnsafeMutablePointer<UInt32>(soloMaskPtr))
-        } else {
-            OSAtomicAnd32(~bit, UnsafeMutablePointer<UInt32>(soloMaskPtr))
-        }
-    }
-
     // MARK: - Processing Mode
 
-    /// Set EQ processing mode (minimum phase or linear phase)
     func setProcessingMode(_ mode: EQProcessingMode) {
-        os_unfair_lock_lock(&modeLock)
-        defer { os_unfair_lock_unlock(&modeLock) }
-
-        processingMode = mode
-
+        processingModeState.write(mode)
         if mode == .linearPhase && linearPhaseEQ == nil {
             linearPhaseEQ = LinearPhaseEQ(sampleRate: sampleRate)
             syncLinearPhaseParams()
@@ -422,9 +331,7 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     }
 
     func getProcessingMode() -> EQProcessingMode {
-        os_unfair_lock_lock(&modeLock)
-        defer { os_unfair_lock_unlock(&modeLock) }
-        return processingMode
+        processingModeState.read()
     }
 
     /// Sync band parameters to linear phase processor
@@ -468,34 +375,24 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Check processing mode
-        os_unfair_lock_lock(&modeLock)
-        let mode = processingMode
-        os_unfair_lock_unlock(&modeLock)
-
+        let mode = processingModeState.read()
         var l = left
         var r = right
 
         if mode == .linearPhase, let lpEQ = linearPhaseEQ {
-            // Linear phase processing
             let result = lpEQ.process(left: l, right: r)
             l = result.left
             r = result.right
         } else {
-            // Minimum phase processing
-            let soloMask = getSoloMask()
+            let currentSoloMask = soloMask.value
 
-            if soloMask != 0 {
-                // Process only soloed bands
-                for index in 0..<bands.count {
-                    if (soloMask & UInt32(1 << index)) != 0 {
-                        let result = bands[index].process(left: l, right: r)
-                        l = result.left
-                        r = result.right
-                    }
+            if currentSoloMask != 0 {
+                for index in 0..<bands.count where soloMask.isBitSet(index) {
+                    let result = bands[index].process(left: l, right: r)
+                    l = result.left
+                    r = result.right
                 }
             } else {
-                // Normal processing - all bands in series
                 for band in bands {
                     let result = band.process(left: l, right: r)
                     l = result.left
@@ -504,10 +401,7 @@ final class ParametricEQ: Effect, @unchecked Sendable {
             }
         }
 
-        // Apply saturation (with oversampling)
-        let saturated = saturation.process(left: l, right: r)
-
-        return saturated
+        return saturation.process(left: l, right: r)
     }
 
     func reset() {
@@ -520,22 +414,14 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     /// Get latency in samples (non-zero for linear phase mode)
     var latencySamples: Int {
-        os_unfair_lock_lock(&modeLock)
-        let mode = processingMode
-        os_unfair_lock_unlock(&modeLock)
-
-        if mode == .linearPhase {
-            return linearPhaseEQ?.latencySamples ?? 0
-        }
-        return 0
+        processingModeState.read() == .linearPhase ? (linearPhaseEQ?.latencySamples ?? 0) : 0
     }
 
     func setBand(_ index: Int, bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
         guard index >= 0, index < bands.count else { return }
         bands[index].update(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
 
-        // Sync to linear phase if active
-        if processingMode == .linearPhase {
+        if processingModeState.read() == .linearPhase {
             syncLinearPhaseParams()
         }
     }
@@ -543,7 +429,7 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     func setSolo(_ index: Int, solo: Bool) {
         guard index >= 0, index < bands.count else { return }
         bands[index].setSolo(solo)
-        setSoloBit(index, solo)
+        soloMask.setBit(index, solo)
     }
 
     func setBandEnabled(_ index: Int, enabled: Bool) {
@@ -574,7 +460,7 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     func clearAllSolo() {
         for (index, band) in bands.enumerated() {
             band.setSolo(false)
-            setSoloBit(index, false)
+            soloMask.setBit(index, false)
         }
     }
 
@@ -585,12 +471,10 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     func isBandSoloed(_ index: Int) -> Bool {
         guard index >= 0, index < bands.count else { return false }
-        return (getSoloMask() & UInt32(1 << index)) != 0
+        return soloMask.isBitSet(index)
     }
 
-    var hasSoloedBand: Bool {
-        getSoloMask() != 0
-    }
+    var hasSoloedBand: Bool { soloMask.isNonZero }
 
     var bandCount: Int { bands.count }
 
@@ -652,77 +536,20 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
     /// Calculate frequency response magnitude at a given frequency
     func magnitudeAt(frequency: Float) -> Float {
-        var magnitude: Float = 1.0
-
-        // Check if any band is soloed
         let soloedBands = bands.filter { $0.solo }
         let bandsToProcess = soloedBands.isEmpty ? bands : soloedBands
 
-        for band in bandsToProcess {
-            let omega = 2.0 * Float.pi * frequency / sampleRate
-            let cosOmega = cos(omega)
-            let cos2Omega = cos(2.0 * omega)
-            let sinOmega = sin(omega)
-            let sin2Omega = sin(2.0 * omega)
-
-            let coeffs = BiquadCoefficients.calculate(
-                type: band.bandType.toBiquadType(gainDb: band.gainDb),
-                sampleRate: sampleRate,
-                frequency: band.frequency,
-                q: band.q
-            )
-
-            // H(e^jw) = (b0 + b1*e^-jw + b2*e^-2jw) / (1 + a1*e^-jw + a2*e^-2jw)
-            let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
-            let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
-            let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
-            let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
-
-            let numMag = sqrt(numReal * numReal + numImag * numImag)
-            let denMag = sqrt(denReal * denReal + denImag * denImag)
-
-            magnitude *= numMag / max(denMag, 1e-10)
-        }
-
-        return magnitude
+        let bandTuples = bandsToProcess.map { ($0.bandType, $0.frequency, $0.gainDb, $0.q) }
+        return FrequencyResponse.combinedMagnitude(bands: bandTuples, atFrequency: frequency, sampleRate: sampleRate)
     }
 
     /// Calculate phase response at a given frequency (in radians)
     func phaseAt(frequency: Float) -> Float {
-        var totalPhase: Float = 0.0
-
-        // Check if any band is soloed
         let soloedBands = bands.filter { $0.solo }
         let bandsToProcess = soloedBands.isEmpty ? bands : soloedBands
 
-        for band in bandsToProcess {
-            let omega = 2.0 * Float.pi * frequency / sampleRate
-            let cosOmega = cos(omega)
-            let cos2Omega = cos(2.0 * omega)
-            let sinOmega = sin(omega)
-            let sin2Omega = sin(2.0 * omega)
-
-            let coeffs = BiquadCoefficients.calculate(
-                type: band.bandType.toBiquadType(gainDb: band.gainDb),
-                sampleRate: sampleRate,
-                frequency: band.frequency,
-                q: band.q
-            )
-
-            // Calculate complex transfer function
-            let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
-            let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
-            let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
-            let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
-
-            // Phase = atan2(imag, real) for numerator - atan2(imag, real) for denominator
-            let numPhase = atan2(numImag, numReal)
-            let denPhase = atan2(denImag, denReal)
-
-            totalPhase += numPhase - denPhase
-        }
-
-        return totalPhase
+        let bandTuples = bandsToProcess.map { ($0.bandType, $0.frequency, $0.gainDb, $0.q) }
+        return FrequencyResponse.combinedPhase(bands: bandTuples, atFrequency: frequency, sampleRate: sampleRate)
     }
 
     /// Get array of band info for UI

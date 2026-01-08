@@ -379,6 +379,7 @@ final class Biquad: @unchecked Sendable {
     }
 
     func reset() {
+        os_unfair_lock_lock(&paramsLock)
         z1 = 0
         z2 = 0
         smoothingCounter = 0
@@ -389,6 +390,7 @@ final class Biquad: @unchecked Sendable {
             frequency: targetParams.frequency,
             q: targetParams.q
         )
+        os_unfair_lock_unlock(&paramsLock)
     }
 
     var isSmoothing: Bool {
@@ -448,9 +450,9 @@ enum BandType: Int, Codable, Sendable {
     }
 }
 
-/// Thread-safe atomic parameter block for EQ band
-/// Used for lock-free parameter updates between UI and audio threads
-struct EQBandParams: @unchecked Sendable {
+/// Thread-safe parameter block for EQ band
+/// Used for parameter updates between UI and audio threads
+struct EQBandParams: Sendable {
     var bandType: BandType
     var frequency: Float
     var gainDb: Float
@@ -466,61 +468,27 @@ struct EQBandParams: @unchecked Sendable {
     }
 }
 
-/// Single EQ band with stereo processing and thread-safe parameter updates
-/// Uses os_unfair_lock for truly atomic parameter updates between UI and audio threads
-/// Enabled flag uses atomic operations to avoid lock acquisition on every sample
+/// Single EQ band with stereo processing and thread-safe parameter updates.
+/// Simplified version of ExtendedEQBand for basic use cases.
 final class EQBand: @unchecked Sendable {
     private var filterLeft: Biquad
     private var filterRight: Biquad
     private let sampleRate: Float
 
-    // Thread-safe parameter storage using lock for atomic struct access
-    // os_unfair_lock is the fastest lock available and safe for real-time audio
-    private var params: EQBandParams
-    private var paramsLock = os_unfair_lock()
+    private let params: ThreadSafeValue<EQBandParams>
+    private let enabledFlag: AtomicBool
 
-    // Atomic enabled flag - uses OSAtomic for lock-free access on every sample
-    // This avoids 240,000+ lock acquisitions per second (5 bands * 48kHz)
-    private let enabledFlagPtr: UnsafeMutablePointer<Int32>
-
-    var enabled: Bool {
-        OSAtomicAdd32(0, enabledFlagPtr) != 0
-    }
-
-    // Public read-only access to current parameters (thread-safe)
-    var bandType: BandType {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.bandType
-    }
-    var frequency: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.frequency
-    }
-    var gainDb: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.gainDb
-    }
-    var q: Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.q
-    }
-    var solo: Bool {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return params.solo
-    }
+    var enabled: Bool { enabledFlag.value }
+    var bandType: BandType { params.read().bandType }
+    var frequency: Float { params.read().frequency }
+    var gainDb: Float { params.read().gainDb }
+    var q: Float { params.read().q }
+    var solo: Bool { params.read().solo }
 
     init(sampleRate: Float, bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
         self.sampleRate = sampleRate
-        self.params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
-
-        // Allocate atomic enabled flag (1 = enabled)
-        self.enabledFlagPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        enabledFlagPtr.initialize(to: 1)
+        self.params = ThreadSafeValue(EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q))
+        self.enabledFlag = AtomicBool(true)
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
@@ -528,75 +496,39 @@ final class EQBand: @unchecked Sendable {
             q: q,
             gainDb: gainDb
         )
-
         self.filterLeft = Biquad(params: biquadParams, sampleRate: sampleRate)
         self.filterRight = Biquad(params: biquadParams, sampleRate: sampleRate)
     }
 
-    deinit {
-        enabledFlagPtr.deinitialize(count: 1)
-        enabledFlagPtr.deallocate()
-    }
-
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Fast path: skip processing if band is disabled (lock-free atomic read)
-        guard OSAtomicAdd32(0, enabledFlagPtr) != 0 else { return (left, right) }
-
+        guard enabledFlag.value else { return (left, right) }
         return (filterLeft.process(left), filterRight.process(right))
     }
 
-    /// Thread-safe parameter update using os_unfair_lock
-    /// All parameters are updated atomically to prevent partial state reads
     func update(bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
-        // Update parameter block atomically
-        os_unfair_lock_lock(&paramsLock)
-        params = EQBandParams(
-            bandType: bandType,
-            frequency: frequency,
-            gainDb: gainDb,
-            q: q,
-            solo: params.solo
-        )
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { p in
+            p = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q, solo: p.solo)
+        }
 
-        // Update filter parameters with smoothing (biquad has its own thread-safety)
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
             frequency: frequency,
             q: q,
             gainDb: gainDb
         )
-
         filterLeft.updateParameters(biquadParams)
         filterRight.updateParameters(biquadParams)
     }
 
-    /// Update solo state atomically
     func setSolo(_ solo: Bool) {
-        os_unfair_lock_lock(&paramsLock)
-        params = EQBandParams(
-            bandType: params.bandType,
-            frequency: params.frequency,
-            gainDb: params.gainDb,
-            q: params.q,
-            solo: solo
-        )
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { p in
+            p = EQBandParams(bandType: p.bandType, frequency: p.frequency, gainDb: p.gainDb, q: p.q, solo: solo)
+        }
     }
 
-    /// Set enabled state - disabled bands skip processing for CPU efficiency
-    /// Uses atomic operations for lock-free access on the audio thread
     func setEnabled(_ enabled: Bool) {
-        // Atomic write using compare-and-swap loop
-        let newValue: Int32 = enabled ? 1 : 0
-        while true {
-            let oldValue = OSAtomicAdd32(0, enabledFlagPtr)
-            if oldValue == newValue { break }
-            if OSAtomicCompareAndSwap32(oldValue, newValue, enabledFlagPtr) { break }
-        }
-
-        // Reset filter state when re-enabling to avoid artifacts
+        enabledFlag.value = enabled
         if enabled {
             filterLeft.reset()
             filterRight.reset()
@@ -815,75 +747,36 @@ final class CascadedFilter: @unchecked Sendable {
         var magnitude: Float = 1.0
 
         for (index, _) in stages.enumerated() {
-            let coeffs: BiquadCoefficients
-
-            switch slope {
-            case .slope6dB:
-                let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
-                coeffs = BiquadCoefficients.calculate(
-                    type: filterType,
-                    sampleRate: sampleRate,
-                    frequency: frequency,
-                    q: 0.707
-                )
-
-            case .slope12dB:
-                let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
-                coeffs = BiquadCoefficients.calculate(
-                    type: filterType,
-                    sampleRate: sampleRate,
-                    frequency: frequency,
-                    q: 0.707
-                )
-
-            case .slope18dB:
-                if index == 0 {
-                    let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
-                    coeffs = BiquadCoefficients.calculate(
-                        type: filterType,
-                        sampleRate: sampleRate,
-                        frequency: frequency,
-                        q: 1.0
-                    )
-                } else {
-                    let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
-                    coeffs = BiquadCoefficients.calculate(
-                        type: filterType,
-                        sampleRate: sampleRate,
-                        frequency: frequency,
-                        q: 0.707
-                    )
-                }
-
-            case .slope24dB:
-                let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
-                let q: Float = index == 0 ? 0.541 : 1.307
-                coeffs = BiquadCoefficients.calculate(
-                    type: filterType,
-                    sampleRate: sampleRate,
-                    frequency: frequency,
-                    q: q
-                )
-            }
-
-            // Calculate magnitude from coefficients
-            let omega = 2.0 * Float.pi * frequency / sampleRate
-            let cosOmega = cos(omega)
-            let cos2Omega = cos(2.0 * omega)
-            let sinOmega = sin(omega)
-            let sin2Omega = sin(2.0 * omega)
-
-            let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
-            let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
-            let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
-            let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
-
-            let numMag = sqrt(numReal * numReal + numImag * numImag)
-            let denMag = sqrt(denReal * denReal + denImag * denImag)
-
-            magnitude *= numMag / max(denMag, 1e-10)
+            let coeffs = coefficientsForStage(index, atFrequency: frequency)
+            magnitude *= FrequencyResponse.magnitude(coefficients: coeffs, atFrequency: frequency, sampleRate: sampleRate)
         }
 
         return magnitude
+    }
+
+    private func coefficientsForStage(_ index: Int, atFrequency frequency: Float) -> BiquadCoefficients {
+        switch slope {
+        case .slope6dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+            return BiquadCoefficients.calculate(type: filterType, sampleRate: sampleRate, frequency: frequency, q: 0.707)
+
+        case .slope12dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            return BiquadCoefficients.calculate(type: filterType, sampleRate: sampleRate, frequency: frequency, q: 0.707)
+
+        case .slope18dB:
+            if index == 0 {
+                let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+                return BiquadCoefficients.calculate(type: filterType, sampleRate: sampleRate, frequency: frequency, q: 1.0)
+            } else {
+                let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+                return BiquadCoefficients.calculate(type: filterType, sampleRate: sampleRate, frequency: frequency, q: 0.707)
+            }
+
+        case .slope24dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            let q: Float = index == 0 ? 0.541 : 1.307
+            return BiquadCoefficients.calculate(type: filterType, sampleRate: sampleRate, frequency: frequency, q: q)
+        }
     }
 }

@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 /// Saturation modes with different harmonic characters
 enum SaturationMode: Int, Codable, CaseIterable, Sendable {
@@ -27,80 +26,60 @@ enum SaturationMode: Int, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Thread-safe saturation processor with multiple analog-modeled modes
-/// Uses 2x oversampling to prevent harmonic aliasing from nonlinearities
+/// Thread-safe saturation processor with multiple analog-modeled modes.
+/// Uses 2x oversampling to prevent harmonic aliasing from nonlinearities.
 final class Saturation: @unchecked Sendable {
-    // Parameters
-    private var mode: SaturationMode = .clean
-    private var drive: Float = 0.0          // 0-24 dB
-    private var mix: Float = 1.0            // Wet/dry (0-1)
-    private var outputGain: Float = 0.0     // Compensation gain in dB
-    private var paramsLock = os_unfair_lock()
+    /// Bundled parameter state for atomic access
+    private struct Params {
+        var mode: SaturationMode = .clean
+        var drive: Float = 0.0
+        var mix: Float = 1.0
+        var outputGain: Float = 0.0
+    }
 
-    // Thresholds for soft clipping
+    private let params: ThreadSafeValue<Params>
+    private let resetFlag: AtomicFlag
+
+    // Soft clipping constants
     private let softClipThreshold: Float = 0.9
     private let softClipKnee: Float = 0.1
 
-    // 2x oversampling state for anti-aliased saturation
+    // 2x oversampling state (audio thread only)
     private var oversamplePrevL: Float = 0
     private var oversamplePrevR: Float = 0
     private var downsamplePrevClipL: Float = 0
     private var downsamplePrevClipR: Float = 0
 
-    // Tape mode state - one-pole lowpass for subtle HF rolloff
+    // Tape mode HF rolloff state
     private var tapeLpStateL: Float = 0
     private var tapeLpStateR: Float = 0
-    private let tapeLpCoeff: Float = 0.3  // Subtle HF rolloff
-
-    // Thread-safe reset flag (avoids locking on every sample)
-    private var resetRequested: UnsafeMutablePointer<Int32>
+    private let tapeLpCoeff: Float = 0.3
 
     init() {
-        resetRequested = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        resetRequested.initialize(to: 0)
-    }
-
-    deinit {
-        resetRequested.deallocate()
+        params = ThreadSafeValue(Params())
+        resetFlag = AtomicFlag()
     }
 
     // MARK: - Parameter Access
 
     func setMode(_ newMode: SaturationMode) {
-        os_unfair_lock_lock(&paramsLock)
-        mode = newMode
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { $0.mode = newMode }
     }
 
     func setDrive(_ newDrive: Float) {
-        os_unfair_lock_lock(&paramsLock)
-        drive = max(0, min(24, newDrive))
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { $0.drive = max(0, min(24, newDrive)) }
     }
 
     func setMix(_ newMix: Float) {
-        os_unfair_lock_lock(&paramsLock)
-        mix = max(0, min(1, newMix))
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { $0.mix = max(0, min(1, newMix)) }
     }
 
     func setOutputGain(_ newGain: Float) {
-        os_unfair_lock_lock(&paramsLock)
-        outputGain = max(-24, min(24, newGain))
-        os_unfair_lock_unlock(&paramsLock)
+        params.modify { $0.outputGain = max(-24, min(24, newGain)) }
     }
 
-    func getMode() -> SaturationMode {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return mode
-    }
-
-    func getDrive() -> Float {
-        os_unfair_lock_lock(&paramsLock)
-        defer { os_unfair_lock_unlock(&paramsLock) }
-        return drive
-    }
+    func getMode() -> SaturationMode { params.read().mode }
+    func getDrive() -> Float { params.read().drive }
 
     // MARK: - Saturation Algorithms
 
@@ -207,16 +186,13 @@ final class Saturation: @unchecked Sendable {
     /// Process stereo samples with 2x oversampled saturation
     @inline(__always)
     func process(left: Float, right: Float) -> (Float, Float) {
-        // Check for pending reset (thread-safe)
         performResetIfNeeded()
 
-        // Read parameters atomically
-        os_unfair_lock_lock(&paramsLock)
-        let currentMode = mode
-        let currentDrive = drive
-        let currentMix = mix
-        let currentOutputGain = outputGain
-        os_unfair_lock_unlock(&paramsLock)
+        let p = params.read()
+        let currentMode = p.mode
+        let currentDrive = p.drive
+        let currentMix = p.mix
+        let currentOutputGain = p.outputGain
 
         // Fast path for clean mode with no drive
         if currentMode == .clean && currentDrive < 0.1 {
@@ -286,21 +262,18 @@ final class Saturation: @unchecked Sendable {
         return (outL, outR)
     }
 
-    /// Reset internal state (thread-safe, actual reset happens on audio thread)
     func reset() {
-        OSAtomicCompareAndSwap32(0, 1, resetRequested)
+        resetFlag.set()
     }
 
-    /// Perform the actual state reset (called from audio thread)
     @inline(__always)
     private func performResetIfNeeded() {
-        if OSAtomicCompareAndSwap32(1, 0, resetRequested) {
-            oversamplePrevL = 0
-            oversamplePrevR = 0
-            downsamplePrevClipL = 0
-            downsamplePrevClipR = 0
-            tapeLpStateL = 0
-            tapeLpStateR = 0
-        }
+        guard resetFlag.testAndClear() else { return }
+        oversamplePrevL = 0
+        oversamplePrevR = 0
+        downsamplePrevClipL = 0
+        downsamplePrevClipR = 0
+        tapeLpStateL = 0
+        tapeLpStateR = 0
     }
 }
