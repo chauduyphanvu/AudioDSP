@@ -2,7 +2,7 @@ import Foundation
 
 /// Thread-safe parameter block for EQ band
 /// Used for parameter updates between UI and audio threads
-struct EQBandParams: Sendable {
+struct EQBandParams: Sendable, Equatable {
     var bandType: BandType
     var frequency: Float
     var gainDb: Float

@@ -6,37 +6,48 @@ import os
 /// Audio engine using low-level CoreAudio for full device control (like Rust CLI)
 @MainActor
 final class AudioEngine: ObservableObject {
+    // MARK: - Audio Thread Accessible Properties
+
     // These are accessed from audio thread callbacks - must be nonisolated
     // dspChain and fftAnalyzer need internal access for UI
     nonisolated(unsafe) let dspChain: DSPChain
     nonisolated(unsafe) let fftAnalyzer: FFTAnalyzer
+
     // Ring buffer sized for low latency: 4096 samples = ~85ms at 48kHz
     // This provides enough headroom for callback timing differences while keeping latency low
-    nonisolated(unsafe) fileprivate let ringBuffer = StereoRingBuffer(capacity: 4096)
-    nonisolated(unsafe) fileprivate var inputUnit: AudioUnit?
-    nonisolated(unsafe) private var outputUnit: AudioUnit?
+    nonisolated(unsafe) let ringBuffer = StereoRingBuffer(capacity: 4096)
+
+    // Audio units - accessed by callbacks via refCon
+    nonisolated(unsafe) var inputUnit: AudioUnit?
+    nonisolated(unsafe) private(set) var outputUnit: AudioUnit?
 
     // Pre-allocated buffer for input callback to avoid real-time allocation
     // Size for max expected buffer: 4096 frames * 2 channels
-    nonisolated(unsafe) fileprivate let inputBuffer: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) let inputBuffer: UnsafeMutablePointer<Float>
     private let inputBufferCapacity: Int = 4096 * 2
 
-    // Published levels for UI metering
+    // MARK: - Published UI State
+
     @Published var inputLevelLeft: Float = 0
     @Published var inputLevelRight: Float = 0
     @Published var outputLevelLeft: Float = 0
     @Published var outputLevelRight: Float = 0
 
-    // Published spectrum data for visualization
     @Published var spectrumData: [Float] = []
 
     @Published var isRunning: Bool = false
     @Published var statusMessage: String = "Ready"
 
+    // MARK: - Configuration
+
     let sampleRate: Double = 48000
     let channels: Int = 2
 
+    // MARK: - Private State
+
     private var levelUpdateTimer: Timer?
+
+    // MARK: - Lifecycle
 
     init() {
         dspChain = DSPChain.createDefault(sampleRate: Float(sampleRate))
@@ -48,9 +59,22 @@ final class AudioEngine: ObservableObject {
     }
 
     deinit {
+        // Stop audio units directly to prevent callback crashes during deallocation
+        // Note: stop() should ideally be called before the engine is released,
+        // but we perform direct cleanup here as a safety measure
+        if let unit = inputUnit {
+            AudioOutputUnitStop(unit)
+            AudioComponentInstanceDispose(unit)
+        }
+        if let unit = outputUnit {
+            AudioOutputUnitStop(unit)
+            AudioComponentInstanceDispose(unit)
+        }
         inputBuffer.deinitialize(count: inputBufferCapacity)
         inputBuffer.deallocate()
     }
+
+    // MARK: - Public API
 
     func start() async {
         do {
@@ -86,18 +110,27 @@ final class AudioEngine: ObservableObject {
         Logger.audio.info("Audio engine stopped")
     }
 
+    // MARK: - CoreAudio Setup
+
     private func setupCoreAudio() throws {
-        // Find devices
-        guard let blackholeID = findBlackHoleDevice() else {
-            throw NSError(domain: "AudioEngine", code: 1, userInfo: [NSLocalizedDescriptionKey: "BlackHole not found"])
+        // Find devices using AudioDeviceManager
+        guard let blackholeID = AudioDeviceManager.findBlackHoleDevice() else {
+            throw AudioEngineError.deviceNotFound("BlackHole not found")
         }
-        guard let speakerID = findSpeakerDevice() else {
-            throw NSError(domain: "AudioEngine", code: 2, userInfo: [NSLocalizedDescriptionKey: "No speaker device found"])
+        guard let speakerID = AudioDeviceManager.findSpeakerDevice() else {
+            throw AudioEngineError.deviceNotFound("No speaker device found")
         }
 
         Logger.audio.info("Using BlackHole ID: \(blackholeID), Speaker ID: \(speakerID)")
 
-        // Set up input unit (HAL Output unit configured for input)
+        try setupInputUnit(deviceID: blackholeID)
+        try setupOutputUnit(deviceID: speakerID)
+        try configureStreamFormat()
+        try installCallbacks()
+        try initializeAndStartUnits()
+    }
+
+    private func setupInputUnit(deviceID: AudioDeviceID) throws {
         var inputDesc = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_HALOutput,
@@ -107,31 +140,41 @@ final class AudioEngine: ObservableObject {
         )
 
         guard let inputComponent = AudioComponentFindNext(nil, &inputDesc) else {
-            throw NSError(domain: "AudioEngine", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not find input component"])
+            throw AudioEngineError.componentNotFound("Could not find input component")
         }
 
         var tempInputUnit: AudioUnit?
         var status = AudioComponentInstanceNew(inputComponent, &tempInputUnit)
-        guard status == noErr, let inputUnit = tempInputUnit else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        guard status == noErr, let unit = tempInputUnit else {
+            throw AudioEngineError.osStatus(status)
         }
-        self.inputUnit = inputUnit
+        self.inputUnit = unit
 
         // Enable input, disable output on input unit
         var enableIO: UInt32 = 1
-        status = AudioUnitSetProperty(inputUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &enableIO, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input, 1, &enableIO, UInt32(MemoryLayout<UInt32>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         enableIO = 0
-        status = AudioUnitSetProperty(inputUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &enableIO, UInt32(MemoryLayout<UInt32>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output, 0, &enableIO, UInt32(MemoryLayout<UInt32>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         // Set input device to BlackHole
-        var inputDeviceID = blackholeID
-        status = AudioUnitSetProperty(inputUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &inputDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        var inputDeviceID = deviceID
+        status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global, 0, &inputDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
+    }
 
-        // Set up output unit
+    private func setupOutputUnit(deviceID: AudioDeviceID) throws {
         var outputDesc = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_HALOutput,
@@ -141,22 +184,30 @@ final class AudioEngine: ObservableObject {
         )
 
         guard let outputComponent = AudioComponentFindNext(nil, &outputDesc) else {
-            throw NSError(domain: "AudioEngine", code: 4, userInfo: [NSLocalizedDescriptionKey: "Could not find output component"])
+            throw AudioEngineError.componentNotFound("Could not find output component")
         }
 
         var tempOutputUnit: AudioUnit?
-        status = AudioComponentInstanceNew(outputComponent, &tempOutputUnit)
-        guard status == noErr, let outputUnit = tempOutputUnit else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        var status = AudioComponentInstanceNew(outputComponent, &tempOutputUnit)
+        guard status == noErr, let unit = tempOutputUnit else {
+            throw AudioEngineError.osStatus(status)
         }
-        self.outputUnit = outputUnit
+        self.outputUnit = unit
 
         // Set output device to speakers
-        var outputDeviceID = speakerID
-        status = AudioUnitSetProperty(outputUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &outputDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        var outputDeviceID = deviceID
+        status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global, 0, &outputDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
+    }
 
-        // Set stream format (stereo float)
+    private func configureStreamFormat() throws {
+        guard let inputUnit = inputUnit, let outputUnit = outputUnit else {
+            throw AudioEngineError.invalidState("Audio units not initialized")
+        }
+
         var streamFormat = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
@@ -169,41 +220,66 @@ final class AudioEngine: ObservableObject {
             mReserved: 0
         )
 
-        status = AudioUnitSetProperty(inputUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &streamFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        var status = AudioUnitSetProperty(
+            inputUnit, kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output, 1, &streamFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
-        status = AudioUnitSetProperty(outputUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &streamFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        status = AudioUnitSetProperty(
+            outputUnit, kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input, 0, &streamFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
+    }
+
+    private func installCallbacks() throws {
+        guard let inputUnit = inputUnit, let outputUnit = outputUnit else {
+            throw AudioEngineError.invalidState("Audio units not initialized")
+        }
 
         // Set up input callback
         var inputCallbackStruct = AURenderCallbackStruct(
-            inputProc: inputCallback,
+            inputProc: audioEngineInputCallback,
             inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
         )
-        status = AudioUnitSetProperty(inputUnit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &inputCallbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        var status = AudioUnitSetProperty(
+            inputUnit, kAudioOutputUnitProperty_SetInputCallback,
+            kAudioUnitScope_Global, 0, &inputCallbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         // Set up output render callback
         var outputCallbackStruct = AURenderCallbackStruct(
-            inputProc: outputCallback,
+            inputProc: audioEngineOutputCallback,
             inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
         )
-        status = AudioUnitSetProperty(outputUnit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &outputCallbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size))
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        status = AudioUnitSetProperty(
+            outputUnit, kAudioUnitProperty_SetRenderCallback,
+            kAudioUnitScope_Input, 0, &outputCallbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+        )
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
+    }
 
-        // Initialize and start
-        status = AudioUnitInitialize(inputUnit)
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+    private func initializeAndStartUnits() throws {
+        guard let inputUnit = inputUnit, let outputUnit = outputUnit else {
+            throw AudioEngineError.invalidState("Audio units not initialized")
+        }
+
+        var status = AudioUnitInitialize(inputUnit)
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         status = AudioUnitInitialize(outputUnit)
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         status = AudioOutputUnitStart(inputUnit)
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
 
         status = AudioOutputUnitStart(outputUnit)
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        guard status == noErr else { throw AudioEngineError.osStatus(status) }
     }
+
+    // MARK: - Level Metering
 
     private func startLevelMetering() {
         levelUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
@@ -217,7 +293,7 @@ final class AudioEngine: ObservableObject {
         let (inL, inR) = dspChain.inputLevels
         let (outL, outR) = dspChain.outputLevels
 
-        // Smooth the levels
+        // Smooth the levels with exponential moving average
         inputLevelLeft = inputLevelLeft * 0.8 + inL * 0.2
         inputLevelRight = inputLevelRight * 0.8 + inR * 0.2
         outputLevelLeft = outputLevelLeft * 0.8 + outL * 0.2
@@ -226,260 +302,26 @@ final class AudioEngine: ObservableObject {
         // Update spectrum data from FFT analyzer
         spectrumData = fftAnalyzer.analyze()
     }
+}
 
-    #if os(macOS)
-    private func findBlackHoleDevice() -> AudioDeviceID? {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+// MARK: - Error Types
 
-        var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize
-        )
-        guard status == noErr else { return nil }
+enum AudioEngineError: LocalizedError {
+    case deviceNotFound(String)
+    case componentNotFound(String)
+    case osStatus(OSStatus)
+    case invalidState(String)
 
-        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &deviceIDs
-        )
-        guard status == noErr else { return nil }
-
-        for deviceID in deviceIDs {
-            if let name = getDeviceName(deviceID), name.lowercased().contains("blackhole") {
-                // Check if it has input channels
-                if hasInputChannels(deviceID) {
-                    return deviceID
-                }
-            }
+    var errorDescription: String? {
+        switch self {
+        case .deviceNotFound(let message):
+            return message
+        case .componentNotFound(let message):
+            return message
+        case .osStatus(let status):
+            return "CoreAudio error: \(status)"
+        case .invalidState(let message):
+            return message
         }
-
-        return nil
     }
-
-    private func getDeviceName(_ deviceID: AudioDeviceID) -> String? {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceNameCFString,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var name: Unmanaged<CFString>?
-        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &name
-        )
-
-        guard status == noErr, let cfName = name?.takeRetainedValue() else { return nil }
-        return cfName as String
-    }
-
-    private func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
-        channelCount(for: deviceID, scope: kAudioDevicePropertyScopeInput) > 0
-    }
-
-    private func findSpeakerDevice() -> AudioDeviceID? {
-        // Search patterns in order of preference (same as Rust CLI)
-        let patterns = [
-            "External Headphones",
-            "External Speakers",
-            "USB",
-            "Headphones",
-            "MacBook Pro Speakers",
-            "MacBook Air Speakers",
-            "speaker",
-            "built-in"
-        ]
-
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize
-        )
-        guard status == noErr else { return nil }
-
-        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &deviceIDs
-        )
-        guard status == noErr else { return nil }
-
-        // Try each pattern in order
-        for pattern in patterns {
-            for deviceID in deviceIDs {
-                if let name = getDeviceName(deviceID),
-                   name.lowercased().contains(pattern.lowercased()),
-                   hasOutputChannels(deviceID) {
-                    Logger.audio.info("Found speaker device: \(name) (ID: \(deviceID))")
-                    return deviceID
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private func hasOutputChannels(_ deviceID: AudioDeviceID) -> Bool {
-        channelCount(for: deviceID, scope: kAudioDevicePropertyScopeOutput) > 0
-    }
-
-    /// Get channel count for a device with the specified scope (input or output)
-    private func channelCount(for deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
-        guard status == noErr else { return 0 }
-
-        let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
-        defer { bufferListPointer.deallocate() }
-
-        status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferListPointer)
-        guard status == noErr else { return 0 }
-
-        return UnsafeMutableAudioBufferListPointer(bufferListPointer)
-            .reduce(0) { $0 + Int($1.mNumberChannels) }
-    }
-
-    #endif
-}
-
-// MARK: - CoreAudio Callbacks (must be global C functions)
-
-private func inputCallback(
-    inRefCon: UnsafeMutableRawPointer,
-    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-    inTimeStamp: UnsafePointer<AudioTimeStamp>,
-    inBusNumber: UInt32,
-    inNumberFrames: UInt32,
-    ioData: UnsafeMutablePointer<AudioBufferList>?
-) -> OSStatus {
-    let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
-
-    // Use pre-allocated buffer instead of allocating on audio thread
-    let frameCount = Int(inNumberFrames)
-    let data = engine.inputBuffer
-
-    // Set up buffer list pointing to pre-allocated memory
-    var bufferList = AudioBufferList(
-        mNumberBuffers: 1,
-        mBuffers: AudioBuffer(
-            mNumberChannels: 2,
-            mDataByteSize: inNumberFrames * 2 * UInt32(MemoryLayout<Float>.size),
-            mData: UnsafeMutableRawPointer(data)
-        )
-    )
-
-    // Render input audio into pre-allocated buffer
-    let status = AudioUnitRender(engine.inputUnit!, ioActionFlags, inTimeStamp, 1, inNumberFrames, &bufferList)
-    guard status == noErr else { return status }
-
-    // Push interleaved stereo samples to ring buffer
-    for frame in 0..<frameCount {
-        let left = data[frame * 2]
-        let right = data[frame * 2 + 1]
-        engine.ringBuffer.push(left: left, right: right)
-    }
-
-    return noErr
-}
-
-/// Denormal flushing helper - sets FTZ mode for the current thread
-/// Call once per audio callback to ensure denormals don't cause CPU spikes
-@inline(__always)
-private func enableDenormalFlushing() {
-    // On Apple Silicon (ARM64), FTZ is typically enabled by default
-    // On Intel, we need to set MXCSR bits
-    // The per-sample threshold checks in Biquad.swift serve as a fallback
-    #if arch(x86_64)
-    // Using compiler intrinsics would require importing simd/intrinsics
-    // The threshold checks in the filter provide the safety net
-    #endif
-}
-
-private func outputCallback(
-    inRefCon: UnsafeMutableRawPointer,
-    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-    inTimeStamp: UnsafePointer<AudioTimeStamp>,
-    inBusNumber: UInt32,
-    inNumberFrames: UInt32,
-    ioData: UnsafeMutablePointer<AudioBufferList>?
-) -> OSStatus {
-    // Note: Denormal handling
-    // - ARM64 (Apple Silicon): FTZ is enabled by default for performance
-    // - x86_64 (Intel): Per-sample threshold checks in Biquad.swift handle denormals
-    // - Additional protection: Filter state variables are flushed when below 1e-15
-
-    let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
-
-    guard let ioData = ioData else { return noErr }
-    let ablPointer = UnsafeMutableAudioBufferListPointer(ioData)
-    guard ablPointer.count > 0,
-          let outData = ablPointer[0].mData?.assumingMemoryBound(to: Float.self) else {
-        return noErr
-    }
-
-    let frameCount = Int(inNumberFrames)
-
-    for frame in 0..<frameCount {
-        // Pull from ring buffer (with graceful underrun handling)
-        let (left, right) = engine.ringBuffer.pop()
-
-        // Process through DSP chain (lock-free)
-        let (procL, procR) = engine.dspChain.process(left: left, right: right)
-
-        // Write interleaved output
-        outData[frame * 2] = procL
-        outData[frame * 2 + 1] = procR
-
-        // Feed analyzer
-        engine.fftAnalyzer.push(left: procL, right: procR)
-    }
-
-    return noErr
-}
-
-// MARK: - Logger Extension
-
-extension Logger {
-    static let audio = Logger(subsystem: "com.audiodsp", category: "Audio")
 }

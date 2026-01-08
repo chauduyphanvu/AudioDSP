@@ -2,14 +2,15 @@ import Foundation
 import os
 
 /// Thread-safe DSP effect chain with level metering
-/// Uses lock-free processing path for real-time audio safety
+/// Uses double-buffered snapshot for lock-free audio thread access
 final class DSPChain: @unchecked Sendable {
     private var effects: [any Effect] = []
     let sampleRate: UInt32
 
-    // Atomic snapshot of effects for lock-free audio thread access
-    // The audio thread reads from this, main thread updates it atomically
-    private var effectsSnapshot: UnsafeMutablePointer<[any Effect]>
+    // Double-buffered snapshots for truly lock-free audio thread access
+    // Main thread writes to inactive buffer, then atomically swaps the index
+    private var effectsBuffers: (UnsafeMutablePointer<[any Effect]>, UnsafeMutablePointer<[any Effect]>)
+    private var activeBufferIndex: UnsafeMutablePointer<Int32>  // 0 or 1, accessed atomically
 
     // Peak level metering with proper ballistics
     // Fast attack (~1ms) to catch transients, slow release (~300ms) for readable display
@@ -22,7 +23,7 @@ final class DSPChain: @unchecked Sendable {
     private let meterAttackCoeff: Float   // ~1ms attack
     private let meterReleaseCoeff: Float  // ~300ms release
 
-    // Lock only for configuration changes (not used on audio thread)
+    // Lock only for configuration changes (not used on audio thread hot path)
     private let configLock = os_unfair_lock_s()
     private var configLockPointer: UnsafeMutablePointer<os_unfair_lock_s>
 
@@ -36,9 +37,15 @@ final class DSPChain: @unchecked Sendable {
         meterAttackCoeff = timeToCoefficient(Self.meterAttackMs, sampleRate: sr)
         meterReleaseCoeff = timeToCoefficient(Self.meterReleaseMs, sampleRate: sr)
 
-        // Initialize lock-free snapshot
-        effectsSnapshot = UnsafeMutablePointer<[any Effect]>.allocate(capacity: 1)
-        effectsSnapshot.initialize(to: [])
+        // Initialize double-buffered snapshots for lock-free access
+        let buffer0 = UnsafeMutablePointer<[any Effect]>.allocate(capacity: 1)
+        buffer0.initialize(to: [])
+        let buffer1 = UnsafeMutablePointer<[any Effect]>.allocate(capacity: 1)
+        buffer1.initialize(to: [])
+        effectsBuffers = (buffer0, buffer1)
+
+        activeBufferIndex = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+        activeBufferIndex.initialize(to: 0)
 
         // Initialize config lock
         configLockPointer = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
@@ -46,8 +53,12 @@ final class DSPChain: @unchecked Sendable {
     }
 
     deinit {
-        effectsSnapshot.deinitialize(count: 1)
-        effectsSnapshot.deallocate()
+        effectsBuffers.0.deinitialize(count: 1)
+        effectsBuffers.0.deallocate()
+        effectsBuffers.1.deinitialize(count: 1)
+        effectsBuffers.1.deallocate()
+        activeBufferIndex.deinitialize(count: 1)
+        activeBufferIndex.deallocate()
         configLockPointer.deinitialize(count: 1)
         configLockPointer.deallocate()
     }
@@ -55,8 +66,13 @@ final class DSPChain: @unchecked Sendable {
     func addEffect(_ effect: any Effect) {
         os_unfair_lock_lock(configLockPointer)
         effects.append(effect)
-        // Atomically update the snapshot for the audio thread
-        effectsSnapshot.pointee = effects
+        // Write to inactive buffer, then atomically swap
+        let currentIndex = OSAtomicAdd32(0, activeBufferIndex)  // Atomic read
+        let inactiveIndex = 1 - currentIndex
+        let inactiveBuffer = inactiveIndex == 0 ? effectsBuffers.0 : effectsBuffers.1
+        inactiveBuffer.pointee = effects
+        OSMemoryBarrier()  // Ensure write completes before swap
+        OSAtomicCompareAndSwap32(currentIndex, inactiveIndex, activeBufferIndex)
         os_unfair_lock_unlock(configLockPointer)
     }
 
@@ -88,7 +104,7 @@ final class DSPChain: @unchecked Sendable {
     }
 
     /// Process a stereo sample pair through the entire chain
-    /// LOCK-FREE: Safe to call from audio thread
+    /// LOCK-FREE: Safe to call from audio thread - uses atomic double-buffer read
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
         // Update input level meters with proper ballistics
@@ -98,9 +114,10 @@ final class DSPChain: @unchecked Sendable {
         var l = left
         var r = right
 
-        // Lock-free read from effects snapshot
-        // Swift arrays are COW, so this is safe as long as we don't mutate
-        let currentEffects = effectsSnapshot.pointee
+        // Lock-free atomic read from double-buffered effects snapshot
+        let index = OSAtomicAdd32(0, activeBufferIndex)  // Atomic read
+        let activeBuffer = index == 0 ? effectsBuffers.0 : effectsBuffers.1
+        let currentEffects = activeBuffer.pointee
         for effect in currentEffects {
             if !effect.isBypassed {
                 let wetDry = effect.wetDry

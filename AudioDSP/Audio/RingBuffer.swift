@@ -166,12 +166,24 @@ final class StereoRingBuffer: @unchecked Sendable {
     private let buffer: RingBuffer<StereoSample>
 
     // Underrun handling - fade out to avoid clicks
+    // These are ONLY written by the audio (consumer) thread during normal operation
+    // clear() signals reset via atomic flag, audio thread handles actual state reset
     private var lastValidSample: StereoSample = .zero
     private var fadeOutCounter: Int = 0
     private let fadeOutSamples: Int = 64  // ~1.3ms at 48kHz
 
+    // Atomic flag to signal fade state reset (main thread sets, audio thread reads and clears)
+    private let resetFadeState: UnsafeMutablePointer<Int32>
+
     init(capacity: Int) {
         buffer = RingBuffer<StereoSample>(capacity: capacity, defaultValue: .zero)
+        resetFadeState = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+        resetFadeState.initialize(to: 0)
+    }
+
+    deinit {
+        resetFadeState.deinitialize(count: 1)
+        resetFadeState.deallocate()
     }
 
     var count: Int {
@@ -192,6 +204,12 @@ final class StereoRingBuffer: @unchecked Sendable {
     /// Returns fade-out samples during underrun to avoid clicks
     @inline(__always)
     func pop() -> (left: Float, right: Float) {
+        // Check if main thread signaled a fade state reset
+        if OSAtomicCompareAndSwap32(1, 0, resetFadeState) {
+            lastValidSample = .zero
+            fadeOutCounter = 0
+        }
+
         if let sample = buffer.pop() {
             // Valid sample - reset fade counter and store for potential underrun
             fadeOutCounter = 0
@@ -224,10 +242,11 @@ final class StereoRingBuffer: @unchecked Sendable {
         )
     }
 
-    /// Clear the buffer (call when stopping audio)
+    /// Clear the buffer (call when stopping audio - safe from any thread)
+    /// Signals fade state reset to audio thread to avoid data race
     func clear() {
         buffer.clear()
-        lastValidSample = .zero
-        fadeOutCounter = 0
+        // Signal audio thread to reset fade state on next pop()
+        OSAtomicCompareAndSwap32(0, 1, resetFadeState)
     }
 }
