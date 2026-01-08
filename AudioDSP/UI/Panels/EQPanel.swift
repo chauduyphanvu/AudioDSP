@@ -24,7 +24,7 @@ struct EQPanel: View {
                     ForEach(EQProcessingMode.allCases, id: \.self) { mode in
                         Button(action: { state.eqProcessingMode = mode }) {
                             HStack {
-                                Text(mode.rawValue)
+                                Text(mode.displayName)
                                 if state.eqProcessingMode == mode {
                                     Image(systemName: "checkmark")
                                 }
@@ -100,6 +100,50 @@ struct EQPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
+                }
+
+                Divider().frame(height: 16)
+
+                // Saturation mode picker
+                Menu {
+                    ForEach(SaturationMode.allCases, id: \.self) { mode in
+                        Button(action: { state.eqSaturationMode = mode }) {
+                            HStack {
+                                Text(mode.displayName)
+                                if state.eqSaturationMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "waveform.circle")
+                            .font(.system(size: 10))
+                        Text(state.eqSaturationMode.displayName)
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(state.eqSaturationMode != .clean ? DSPTheme.meterOrange : DSPTheme.textTertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(state.eqSaturationMode != .clean ? DSPTheme.meterOrange.opacity(0.15) : DSPTheme.surfaceBackground)
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .help(state.eqSaturationMode.description)
+
+                // Drive knob (only shown when saturation is active)
+                if state.eqSaturationMode != .clean {
+                    CompactKnob(
+                        value: $state.eqSaturationDrive,
+                        range: 0...24,
+                        label: "Drive",
+                        unit: .decibels,
+                        defaultValue: 0
+                    )
+                    .frame(width: 40)
                 }
             }
 
@@ -188,12 +232,63 @@ struct BandControl: View {
                 .help(band.enabled ? "Disable band (saves CPU)" : "Enable band")
 
                 Menu {
+                    // Filter type section
                     Button("Low Shelf") { changeBandType(to: .lowShelf) }
                     Button("Peak") { changeBandType(to: .peak) }
                     Button("High Shelf") { changeBandType(to: .highShelf) }
                     Divider()
                     Button("Low Pass") { changeBandType(to: .lowPass) }
                     Button("High Pass") { changeBandType(to: .highPass) }
+
+                    // Slope section (only for LP/HP)
+                    if band.slopeApplicable {
+                        Divider()
+                        Menu("Slope: \(band.slope.displayName)") {
+                            ForEach(FilterSlope.allCases, id: \.self) { slope in
+                                Button(slope.displayName) { band.slope = slope }
+                            }
+                        }
+                    }
+
+                    // M/S Mode section
+                    Divider()
+                    Menu("M/S: \(band.msMode.displayName)") {
+                        ForEach(MSMode.allCases, id: \.self) { mode in
+                            Button(action: { band.msMode = mode }) {
+                                HStack {
+                                    Text(mode.displayName)
+                                    if band.msMode == mode {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Topology section
+                    Menu("Topology: \(band.topology.displayName)") {
+                        ForEach(FilterTopology.allCases, id: \.self) { topo in
+                            Button(action: { band.topology = topo }) {
+                                HStack {
+                                    Text(topo.displayName)
+                                    if band.topology == topo {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Dynamics toggle
+                    Divider()
+                    Button(action: { band.dynamicsEnabled.toggle() }) {
+                        HStack {
+                            Text("Dynamic EQ")
+                            if band.dynamicsEnabled {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Text(bandName)
@@ -222,11 +317,40 @@ struct BandControl: View {
                 .help("Solo this band")
             }
 
-            // Band type indicator with resonance warning
+            // Band type indicator with feature badges
             HStack(spacing: 2) {
                 Text(bandTypeLabel)
                     .font(.system(size: 8, weight: .medium))
                     .foregroundColor(DSPTheme.textTertiary)
+
+                // Show slope indicator for LP/HP with non-default slope
+                if band.slopeApplicable && band.slope != .slope12dB {
+                    Text(band.slope.displayName.replacingOccurrences(of: " dB/oct", with: ""))
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundColor(DSPTheme.accent)
+                }
+
+                // Show M/S indicator when not in stereo mode
+                if band.msMode != .stereo {
+                    Text(band.msMode.displayName)
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundColor(DSPTheme.meterGreen)
+                }
+
+                // Show topology indicator when using SVF
+                if band.topology == .svf {
+                    Text("SVF")
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundColor(DSPTheme.accent)
+                }
+
+                // Show dynamics indicator
+                if band.dynamicsEnabled {
+                    Image(systemName: "waveform.path.badge.minus")
+                        .font(.system(size: 7))
+                        .foregroundColor(DSPTheme.meterYellow)
+                        .help("Dynamic EQ enabled")
+                }
 
                 // Show resonance indicator for LP/HP modes with high Q
                 if band.bandType.isResonant && band.q > 2.0 {
@@ -276,6 +400,54 @@ struct BandControl: View {
                     Text(String(format: "%.1f oct", band.bandwidthOctaves))
                         .font(.system(size: 8))
                         .foregroundColor(DSPTheme.textTertiary)
+                }
+            }
+
+            // Dynamics controls (shown when dynamics is enabled and band is selected)
+            if band.dynamicsEnabled && isSelected {
+                Divider()
+                    .padding(.vertical, 4)
+
+                VStack(spacing: 4) {
+                    Text("Dynamics")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(DSPTheme.meterYellow)
+
+                    HStack(spacing: 8) {
+                        VStack(spacing: 2) {
+                            Text("Thresh")
+                                .font(.system(size: 7))
+                                .foregroundColor(DSPTheme.textTertiary)
+                            Text(String(format: "%.0f", band.dynamicsThreshold))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundColor(DSPTheme.textSecondary)
+                        }
+                        .frame(width: 32)
+                        .gesture(
+                            DragGesture(minimumDistance: 1)
+                                .onChanged { value in
+                                    let delta = Float(-value.translation.height / 4)
+                                    band.dynamicsThreshold = max(-60, min(0, band.dynamicsThreshold + delta))
+                                }
+                        )
+
+                        VStack(spacing: 2) {
+                            Text("Ratio")
+                                .font(.system(size: 7))
+                                .foregroundColor(DSPTheme.textTertiary)
+                            Text(String(format: "%.1f:1", band.dynamicsRatio))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundColor(DSPTheme.textSecondary)
+                        }
+                        .frame(width: 32)
+                        .gesture(
+                            DragGesture(minimumDistance: 1)
+                                .onChanged { value in
+                                    let delta = Float(-value.translation.height / 20)
+                                    band.dynamicsRatio = max(1, min(10, band.dynamicsRatio + delta))
+                                }
+                        )
+                    }
                 }
             }
         }

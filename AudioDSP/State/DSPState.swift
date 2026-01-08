@@ -9,7 +9,19 @@ struct EQBandState: Equatable, Codable {
     var q: Float
     var bandType: BandType
     var solo: Bool = false
-    var enabled: Bool = true  // Band can be disabled to save CPU
+    var enabled: Bool = true
+
+    // New advanced features
+    var slope: FilterSlope = .slope12dB
+    var topology: FilterTopology = .biquad
+    var msMode: MSMode = .stereo
+
+    // Dynamic EQ
+    var dynamicsEnabled: Bool = false
+    var dynamicsThreshold: Float = -12
+    var dynamicsRatio: Float = 2.0
+    var dynamicsAttack: Float = 10
+    var dynamicsRelease: Float = 100
 
     /// Bandwidth in octaves (derived from Q)
     var bandwidthOctaves: Float {
@@ -23,20 +35,10 @@ struct EQBandState: Equatable, Codable {
         }
         return String(format: "%.2f", q)
     }
-}
 
-/// EQ processing mode
-enum EQProcessingMode: String, CaseIterable, Codable {
-    case minimumPhase = "Minimum Phase"
-    case linearPhase = "Linear Phase"
-
-    var description: String {
-        switch self {
-        case .minimumPhase:
-            return "Lower latency, suitable for tracking"
-        case .linearPhase:
-            return "No phase shift, ideal for mastering"
-        }
+    /// Returns true if slope control is applicable for this band type
+    var slopeApplicable: Bool {
+        FilterSlope.appliesTo(bandType)
     }
 }
 
@@ -58,6 +60,10 @@ final class DSPState: ObservableObject {
     ]
     @Published var eqBypassed: Bool = false
     @Published var eqProcessingMode: EQProcessingMode = .minimumPhase
+
+    // Saturation settings (global, applied after all bands)
+    @Published var eqSaturationMode: SaturationMode = .clean
+    @Published var eqSaturationDrive: Float = 0.0
 
     // MARK: - Compressor Parameters
 
@@ -169,6 +175,17 @@ final class DSPState: ObservableObject {
         // Reduced debounce to 8ms for more responsive UI feedback
         // DSP-side parameter smoothing (5ms) handles zipper noise prevention
         $eqBands
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEQToChain() }
+            .store(in: &cancellables)
+
+        // Sync EQ processing mode and saturation
+        $eqProcessingMode
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEQToChain() }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest($eqSaturationMode, $eqSaturationDrive)
             .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncEQToChain() }
             .store(in: &cancellables)
@@ -303,15 +320,34 @@ final class DSPState: ObservableObject {
 
         eq.isBypassed = eqBypassed
 
+        // Sync processing mode
+        eq.setProcessingMode(eqProcessingMode)
+
+        // Sync saturation settings
+        eq.setSaturationMode(eqSaturationMode)
+        eq.setSaturationDrive(eqSaturationDrive)
+
+        // Sync band parameters
         for (index, band) in eqBands.enumerated() {
             eq.setBand(index, bandType: band.bandType, frequency: band.frequency, gainDb: band.gainDb, q: band.q)
             eq.setSolo(index, solo: band.solo)
             eq.setBandEnabled(index, enabled: band.enabled)
-        }
 
-        // Note: Linear phase mode would require a different processing path
-        // Currently using minimum phase (IIR biquads) for all processing
-        // Linear phase support would use FFT-based convolution with symmetric FIR
+            // Sync advanced features
+            eq.setBandSlope(index, slope: band.slope)
+            eq.setBandTopology(index, topology: band.topology)
+            eq.setBandMSMode(index, mode: band.msMode)
+
+            // Sync dynamics
+            eq.setBandDynamics(
+                index,
+                enabled: band.dynamicsEnabled,
+                threshold: band.dynamicsThreshold,
+                ratio: band.dynamicsRatio,
+                attackMs: band.dynamicsAttack,
+                releaseMs: band.dynamicsRelease
+            )
+        }
     }
 
     private func syncOutputGainToChain() {

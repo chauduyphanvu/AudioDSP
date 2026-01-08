@@ -9,6 +9,32 @@ enum BiquadFilterType {
     case lowPass
     case highPass
     case allPass
+    case lowPass1Pole   // 6dB/oct single-pole lowpass
+    case highPass1Pole  // 6dB/oct single-pole highpass
+}
+
+/// Filter slope options for LP/HP filters
+enum FilterSlope: Int, Codable, CaseIterable, Sendable {
+    case slope6dB = 1   // 1-pole (6dB/oct)
+    case slope12dB = 2  // 1 biquad (12dB/oct)
+    case slope18dB = 3  // 1 biquad + 1-pole (18dB/oct)
+    case slope24dB = 4  // 2 cascaded biquads (24dB/oct)
+
+    var displayName: String {
+        switch self {
+        case .slope6dB: return "6 dB/oct"
+        case .slope12dB: return "12 dB/oct"
+        case .slope18dB: return "18 dB/oct"
+        case .slope24dB: return "24 dB/oct"
+        }
+    }
+
+    var stageCount: Int { rawValue }
+
+    /// Returns true if slope applies to the given band type
+    static func appliesTo(_ bandType: BandType) -> Bool {
+        bandType == .lowPass || bandType == .highPass
+    }
 }
 
 /// Biquad filter coefficients
@@ -107,6 +133,31 @@ struct BiquadCoefficients {
             a0 = 1.0 + alpha
             a1 = -2.0 * cosOmega
             a2 = 1.0 - alpha
+
+        case .lowPass1Pole:
+            // Simple 1-pole lowpass (6dB/oct)
+            // Using bilinear transform of analog RC filter
+            let wc = 2.0 * Float.pi * actualFreq
+            let T = 1.0 / sampleRate
+            let alpha1p = wc * T / (2.0 + wc * T)
+            b0 = alpha1p
+            b1 = alpha1p
+            b2 = 0
+            a0 = 1.0
+            a1 = alpha1p - 1.0
+            a2 = 0
+
+        case .highPass1Pole:
+            // Simple 1-pole highpass (6dB/oct)
+            let wc = 2.0 * Float.pi * actualFreq
+            let T = 1.0 / sampleRate
+            let alpha1p = 1.0 / (1.0 + wc * T / 2.0)
+            b0 = alpha1p
+            b1 = -alpha1p
+            b2 = 0
+            a0 = 1.0
+            a1 = alpha1p - 1.0
+            a2 = 0
         }
 
         // Normalize coefficients
@@ -281,6 +332,8 @@ final class Biquad: @unchecked Sendable {
                 case .lowPass: interpFilterType = .lowPass
                 case .highPass: interpFilterType = .highPass
                 case .allPass: interpFilterType = .allPass
+                case .lowPass1Pole: interpFilterType = .lowPass1Pole
+                case .highPass1Pole: interpFilterType = .highPass1Pole
                 }
 
                 // Recalculate coefficients from interpolated parameters
@@ -575,5 +628,262 @@ enum QBandwidthConverter {
             return String(format: "%.2f (%.2f oct)", q, octaves)
         }
         return String(format: "%.2f", q)
+    }
+}
+
+/// Cascaded filter for steeper slopes (18dB/oct, 24dB/oct)
+/// Chains multiple filter stages to achieve higher-order responses
+final class CascadedFilter: @unchecked Sendable {
+    private var stages: [Biquad]
+    private let slope: FilterSlope
+    private let sampleRate: Float
+    private var isHighPass: Bool = false
+
+    init(slope: FilterSlope, sampleRate: Float) {
+        self.slope = slope
+        self.sampleRate = sampleRate
+
+        // Create filter stages based on slope
+        switch slope {
+        case .slope6dB:
+            // Single 1-pole filter
+            stages = [Biquad(sampleRate: sampleRate)]
+        case .slope12dB:
+            // Single biquad (standard)
+            stages = [Biquad(sampleRate: sampleRate)]
+        case .slope18dB:
+            // One biquad + one 1-pole
+            stages = [
+                Biquad(sampleRate: sampleRate),
+                Biquad(sampleRate: sampleRate)
+            ]
+        case .slope24dB:
+            // Two cascaded biquads
+            stages = [
+                Biquad(sampleRate: sampleRate),
+                Biquad(sampleRate: sampleRate)
+            ]
+        }
+    }
+
+    /// Update filter parameters for all stages
+    /// Uses Butterworth Q distribution for maximally flat passband
+    func updateParameters(frequency: Float, q: Float, isHighPass: Bool) {
+        self.isHighPass = isHighPass
+
+        switch slope {
+        case .slope6dB:
+            // Single 1-pole
+            let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+            stages[0].updateParameters(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q,
+                gainDb: 0
+            ))
+
+        case .slope12dB:
+            // Single biquad with user Q
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            stages[0].updateParameters(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q,
+                gainDb: 0
+            ))
+
+        case .slope18dB:
+            // First stage: biquad with Butterworth Q
+            // Second stage: 1-pole
+            let filterType2p: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            let filterType1p: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+
+            // For 3rd order Butterworth, use Q = 1.0 for the biquad section
+            stages[0].updateParameters(BiquadParams(
+                filterType: filterType2p,
+                frequency: frequency,
+                q: 1.0,
+                gainDb: 0
+            ))
+            stages[1].updateParameters(BiquadParams(
+                filterType: filterType1p,
+                frequency: frequency,
+                q: q,  // Q doesn't apply to 1-pole
+                gainDb: 0
+            ))
+
+        case .slope24dB:
+            // Two cascaded biquads with Butterworth Q values
+            // 4th order Butterworth: Q1 = 0.541, Q2 = 1.307
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            let q1: Float = 0.541
+            let q2: Float = 1.307
+
+            stages[0].updateParameters(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q1,
+                gainDb: 0
+            ))
+            stages[1].updateParameters(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q2,
+                gainDb: 0
+            ))
+        }
+    }
+
+    /// Set parameters immediately without smoothing
+    func setParametersImmediate(frequency: Float, q: Float, isHighPass: Bool) {
+        self.isHighPass = isHighPass
+
+        switch slope {
+        case .slope6dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+            stages[0].setParametersImmediate(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q,
+                gainDb: 0
+            ))
+
+        case .slope12dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            stages[0].setParametersImmediate(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: q,
+                gainDb: 0
+            ))
+
+        case .slope18dB:
+            let filterType2p: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            let filterType1p: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+
+            stages[0].setParametersImmediate(BiquadParams(
+                filterType: filterType2p,
+                frequency: frequency,
+                q: 1.0,
+                gainDb: 0
+            ))
+            stages[1].setParametersImmediate(BiquadParams(
+                filterType: filterType1p,
+                frequency: frequency,
+                q: q,
+                gainDb: 0
+            ))
+
+        case .slope24dB:
+            let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+            stages[0].setParametersImmediate(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: 0.541,
+                gainDb: 0
+            ))
+            stages[1].setParametersImmediate(BiquadParams(
+                filterType: filterType,
+                frequency: frequency,
+                q: 1.307,
+                gainDb: 0
+            ))
+        }
+    }
+
+    @inline(__always)
+    func process(_ input: Float) -> Float {
+        var output = input
+        for stage in stages {
+            output = stage.process(output)
+        }
+        return output
+    }
+
+    func reset() {
+        for stage in stages {
+            stage.reset()
+        }
+    }
+
+    var isSmoothing: Bool {
+        stages.contains { $0.isSmoothing }
+    }
+
+    /// Calculate combined magnitude response at a frequency
+    func magnitudeAt(frequency: Float) -> Float {
+        var magnitude: Float = 1.0
+
+        for (index, _) in stages.enumerated() {
+            let coeffs: BiquadCoefficients
+
+            switch slope {
+            case .slope6dB:
+                let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+                coeffs = BiquadCoefficients.calculate(
+                    type: filterType,
+                    sampleRate: sampleRate,
+                    frequency: frequency,
+                    q: 0.707
+                )
+
+            case .slope12dB:
+                let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+                coeffs = BiquadCoefficients.calculate(
+                    type: filterType,
+                    sampleRate: sampleRate,
+                    frequency: frequency,
+                    q: 0.707
+                )
+
+            case .slope18dB:
+                if index == 0 {
+                    let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+                    coeffs = BiquadCoefficients.calculate(
+                        type: filterType,
+                        sampleRate: sampleRate,
+                        frequency: frequency,
+                        q: 1.0
+                    )
+                } else {
+                    let filterType: BiquadFilterType = isHighPass ? .highPass1Pole : .lowPass1Pole
+                    coeffs = BiquadCoefficients.calculate(
+                        type: filterType,
+                        sampleRate: sampleRate,
+                        frequency: frequency,
+                        q: 0.707
+                    )
+                }
+
+            case .slope24dB:
+                let filterType: BiquadFilterType = isHighPass ? .highPass : .lowPass
+                let q: Float = index == 0 ? 0.541 : 1.307
+                coeffs = BiquadCoefficients.calculate(
+                    type: filterType,
+                    sampleRate: sampleRate,
+                    frequency: frequency,
+                    q: q
+                )
+            }
+
+            // Calculate magnitude from coefficients
+            let omega = 2.0 * Float.pi * frequency / sampleRate
+            let cosOmega = cos(omega)
+            let cos2Omega = cos(2.0 * omega)
+            let sinOmega = sin(omega)
+            let sin2Omega = sin(2.0 * omega)
+
+            let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
+            let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
+            let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
+            let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
+
+            let numMag = sqrt(numReal * numReal + numImag * numImag)
+            let denMag = sqrt(denReal * denReal + denImag * denImag)
+
+            magnitude *= numMag / max(denMag, 1e-10)
+        }
+
+        return magnitude
     }
 }
