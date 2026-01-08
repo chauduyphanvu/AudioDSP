@@ -5,6 +5,9 @@ import Foundation
 struct SessionState: Codable {
     var eqBands: [EQBandState]
     var eqBypassed: Bool
+    var eqProcessingMode: EQProcessingMode
+    var eqSaturationMode: SaturationMode
+    var eqSaturationDrive: Float
     var compressorThreshold: Float
     var compressorRatio: Float
     var compressorAttack: Float
@@ -98,6 +101,9 @@ final class SessionManager: ObservableObject {
         SessionState(
             eqBands: state.eqBands,
             eqBypassed: state.eqBypassed,
+            eqProcessingMode: state.eqProcessingMode,
+            eqSaturationMode: state.eqSaturationMode,
+            eqSaturationDrive: state.eqSaturationDrive,
             compressorThreshold: state.compressorThreshold,
             compressorRatio: state.compressorRatio,
             compressorAttack: state.compressorAttack,
@@ -133,6 +139,9 @@ final class SessionManager: ObservableObject {
     private func apply(_ session: SessionState, to state: DSPState) {
         state.eqBands = session.eqBands
         state.eqBypassed = session.eqBypassed
+        state.eqProcessingMode = session.eqProcessingMode
+        state.eqSaturationMode = session.eqSaturationMode
+        state.eqSaturationDrive = session.eqSaturationDrive
         state.compressorThreshold = session.compressorThreshold
         state.compressorRatio = session.compressorRatio
         state.compressorAttack = session.compressorAttack
