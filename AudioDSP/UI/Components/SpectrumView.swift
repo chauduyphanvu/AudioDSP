@@ -14,6 +14,7 @@ struct SpectrumView: View {
     var height: CGFloat = 120
     var displayMode: SpectrumDisplayMode = .curve
     var showPeakHold: Bool = true
+    var peakDecayRate: Float = 40  // dB per second (10 = slow, 100 = fast)
 
     @State private var peakHoldValues: [Float] = []
     @State private var peakDecayTimers: [Date] = []
@@ -23,7 +24,6 @@ struct SpectrumView: View {
     private let minFreq: Float = 20
     private let maxFreq: Float = 20000
     private let peakHoldTime: TimeInterval = 1.5
-    private let peakDecayRate: Float = 40  // dB per second
 
     // Frequency bands for coloring
     private let bassRange: ClosedRange<Float> = 20...250

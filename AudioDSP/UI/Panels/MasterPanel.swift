@@ -11,6 +11,7 @@ struct MasterPanel: View {
     @State private var showSpectrum = true
     @State private var spectrumMode: SpectrumDisplayMode = .curve
     @State private var showPeakHold = true
+    @State private var peakDecaySpeed: Float = 40  // dB per second
 
     var body: some View {
         VStack(spacing: 16) {
@@ -110,9 +111,15 @@ struct MasterPanel: View {
 
                         PeakHoldToggle(isEnabled: $showPeakHold)
                             .transition(.opacity.combined(with: .scale(scale: 0.9)))
+
+                        if showPeakHold {
+                            DecaySpeedControl(speed: $peakDecaySpeed)
+                                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        }
                     }
                 }
                 .animation(.easeInOut(duration: 0.2), value: showSpectrum)
+                .animation(.easeInOut(duration: 0.2), value: showPeakHold)
 
                 ToolbarDivider()
 
@@ -140,7 +147,8 @@ struct MasterPanel: View {
                     magnitudes: audioEngine.spectrumData,
                     height: 80,
                     displayMode: spectrumMode,
-                    showPeakHold: showPeakHold
+                    showPeakHold: showPeakHold,
+                    peakDecayRate: peakDecaySpeed
                 )
                 .padding(.horizontal, 16)
                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
@@ -283,6 +291,86 @@ struct ABSlotButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+}
+
+/// Decay speed control for peak hold
+struct DecaySpeedControl: View {
+    @Binding var speed: Float  // 10-100 dB/s
+
+    @State private var isHovered = false
+
+    private let minSpeed: Float = 10
+    private let maxSpeed: Float = 100
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "tortoise")
+                .font(.system(size: 8))
+                .foregroundColor(DSPTheme.textTertiary)
+
+            MiniSlider(value: $speed, range: minSpeed...maxSpeed)
+                .frame(width: 50)
+
+            Image(systemName: "hare")
+                .font(.system(size: 8))
+                .foregroundColor(DSPTheme.textTertiary)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(DSPTheme.surfaceBackground.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .help("Peak decay speed: \(Int(speed)) dB/s")
+    }
+}
+
+/// Mini slider for compact controls
+struct MiniSlider: View {
+    @Binding var value: Float
+    var range: ClosedRange<Float>
+
+    @State private var isDragging = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                // Track
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(DSPTheme.surfaceBackground)
+                    .frame(height: 4)
+
+                // Fill
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(DSPTheme.accent)
+                    .frame(width: geometry.size.width * CGFloat(normalizedValue), height: 4)
+
+                // Thumb
+                Circle()
+                    .fill(isDragging ? DSPTheme.accent : DSPTheme.textPrimary)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                    .offset(x: (geometry.size.width - 10) * CGFloat(normalizedValue))
+            }
+            .frame(height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        isDragging = true
+                        let normalized = Float(gesture.location.x / geometry.size.width)
+                        let clamped = min(max(normalized, 0), 1)
+                        value = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
+        }
+        .frame(height: 16)
+    }
+
+    private var normalizedValue: Float {
+        (value - range.lowerBound) / (range.upperBound - range.lowerBound)
     }
 }
 
