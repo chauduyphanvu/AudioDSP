@@ -10,6 +10,7 @@ struct MasterPanel: View {
     @State private var newPresetName = ""
     @State private var showSpectrum = true
     @State private var spectrumMode: SpectrumDisplayMode = .curve
+    @State private var showPeakHold = true
 
     var body: some View {
         VStack(spacing: 16) {
@@ -106,6 +107,9 @@ struct MasterPanel: View {
                     if showSpectrum {
                         SpectrumModeToggle(mode: $spectrumMode)
                             .transition(.opacity.combined(with: .scale(scale: 0.9)))
+
+                        PeakHoldToggle(isEnabled: $showPeakHold)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
                 }
                 .animation(.easeInOut(duration: 0.2), value: showSpectrum)
@@ -135,7 +139,8 @@ struct MasterPanel: View {
                 SpectrumView(
                     magnitudes: audioEngine.spectrumData,
                     height: 80,
-                    displayMode: spectrumMode
+                    displayMode: spectrumMode,
+                    showPeakHold: showPeakHold
                 )
                 .padding(.horizontal, 16)
                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
@@ -278,6 +283,33 @@ struct ABSlotButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+}
+
+/// Peak hold toggle button
+struct PeakHoldToggle: View {
+    @Binding var isEnabled: Bool
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isEnabled.toggle()
+            }
+        }) {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(isEnabled ? DSPTheme.accent : (isHovered ? DSPTheme.textSecondary : DSPTheme.textTertiary))
+                .frame(width: 28, height: 26)
+                .background(isEnabled ? DSPTheme.accent.opacity(0.15) : (isHovered ? DSPTheme.cardBackground : DSPTheme.surfaceBackground.opacity(0.5)))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(isEnabled ? "Hide peak hold" : "Show peak hold")
     }
 }
 
