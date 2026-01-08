@@ -249,10 +249,8 @@ final class StereoDelayLine: @unchecked Sendable {
 
     /// Reset buffers without allocation (audio-thread safe)
     func reset() {
-        for i in 0..<maxSamples {
-            bufferLeft[i] = 0
-            bufferRight[i] = 0
-        }
+        bufferLeft.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        bufferRight.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         writeIndex = 0
     }
 }
@@ -296,9 +294,7 @@ final class MonoDelayLine: @unchecked Sendable {
 
     /// Reset buffer without allocation (audio-thread safe)
     func reset() {
-        for i in 0..<maxSamples {
-            buffer[i] = 0
-        }
+        buffer.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         writeIndex = 0
     }
 }

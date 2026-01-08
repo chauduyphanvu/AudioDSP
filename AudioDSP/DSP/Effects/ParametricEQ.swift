@@ -417,9 +417,14 @@ final class ParametricEQ: Effect, @unchecked Sendable {
         processingModeState.read() == .linearPhase ? (linearPhaseEQ?.latencySamples ?? 0) : 0
     }
 
+    /// Safely access a band by index, returning nil if out of bounds
+    private func band(at index: Int) -> ExtendedEQBand? {
+        bands.indices.contains(index) ? bands[index] : nil
+    }
+
     func setBand(_ index: Int, bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].update(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
+        guard let band = band(at: index) else { return }
+        band.update(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
 
         if processingModeState.read() == .linearPhase {
             syncLinearPhaseParams()
@@ -427,34 +432,29 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     }
 
     func setSolo(_ index: Int, solo: Bool) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setSolo(solo)
+        guard let band = band(at: index) else { return }
+        band.setSolo(solo)
         soloMask.setBit(index, solo)
     }
 
     func setBandEnabled(_ index: Int, enabled: Bool) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setEnabled(enabled)
+        band(at: index)?.setEnabled(enabled)
     }
 
     func setBandSlope(_ index: Int, slope: FilterSlope) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setSlope(slope)
+        band(at: index)?.setSlope(slope)
     }
 
     func setBandTopology(_ index: Int, topology: FilterTopology) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setTopology(topology)
+        band(at: index)?.setTopology(topology)
     }
 
     func setBandMSMode(_ index: Int, mode: MSMode) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setMSMode(mode)
+        band(at: index)?.setMSMode(mode)
     }
 
     func setBandDynamics(_ index: Int, enabled: Bool, threshold: Float, ratio: Float, attackMs: Float, releaseMs: Float) {
-        guard index >= 0, index < bands.count else { return }
-        bands[index].setDynamics(enabled: enabled, threshold: threshold, ratio: ratio, attackMs: attackMs, releaseMs: releaseMs)
+        band(at: index)?.setDynamics(enabled: enabled, threshold: threshold, ratio: ratio, attackMs: attackMs, releaseMs: releaseMs)
     }
 
     func clearAllSolo() {
@@ -465,13 +465,11 @@ final class ParametricEQ: Effect, @unchecked Sendable {
     }
 
     func getBand(_ index: Int) -> ExtendedEQBand? {
-        guard index >= 0, index < bands.count else { return nil }
-        return bands[index]
+        band(at: index)
     }
 
     func isBandSoloed(_ index: Int) -> Bool {
-        guard index >= 0, index < bands.count else { return false }
-        return soloMask.isBitSet(index)
+        bands.indices.contains(index) && soloMask.isBitSet(index)
     }
 
     var hasSoloedBand: Bool { soloMask.isNonZero }

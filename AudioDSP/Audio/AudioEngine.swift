@@ -294,24 +294,7 @@ final class AudioEngine: ObservableObject {
     }
 
     private func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
-        guard status == noErr else { return false }
-
-        let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
-        defer { bufferListPointer.deallocate() }
-
-        status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferListPointer)
-        guard status == noErr else { return false }
-
-        let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-        return bufferList.reduce(0) { $0 + Int($1.mNumberChannels) } > 0
+        channelCount(for: deviceID, scope: kAudioDevicePropertyScopeInput) > 0
     }
 
     private func findSpeakerDevice() -> AudioDeviceID? {
@@ -372,24 +355,29 @@ final class AudioEngine: ObservableObject {
     }
 
     private func hasOutputChannels(_ deviceID: AudioDeviceID) -> Bool {
+        channelCount(for: deviceID, scope: kAudioDevicePropertyScopeOutput) > 0
+    }
+
+    /// Get channel count for a device with the specified scope (input or output)
+    private func channelCount(for deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeOutput,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
 
         var dataSize: UInt32 = 0
         var status = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
-        guard status == noErr else { return false }
+        guard status == noErr else { return 0 }
 
         let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
         defer { bufferListPointer.deallocate() }
 
         status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferListPointer)
-        guard status == noErr else { return false }
+        guard status == noErr else { return 0 }
 
-        let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-        return bufferList.reduce(0) { $0 + Int($1.mNumberChannels) } > 0
+        return UnsafeMutableAudioBufferListPointer(bufferListPointer)
+            .reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
     #endif

@@ -37,15 +37,11 @@ final class StereoWidener: Effect, @unchecked Sendable {
     }
 
     func getParameter(_ index: Int) -> Float {
-        switch index {
-        case 0: return width
-        default: return 0
-        }
+        index == 0 ? width : 0
     }
 
     func setParameter(_ index: Int, value: Float) {
-        if index == 0 {
-            width = value.clamped(to: 0...2)
-        }
+        guard index == 0 else { return }
+        width = value.clamped(to: 0...2)
     }
 }

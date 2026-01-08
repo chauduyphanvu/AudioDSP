@@ -143,26 +143,19 @@ final class Reverb: Effect, @unchecked Sendable {
 
     func reset() {
         // Zero existing buffers without allocation (safe for audio thread)
-        for i in 0..<combBuffersL.count {
-            for j in 0..<combBuffersL[i].count {
-                combBuffersL[i][j] = 0
-                combBuffersR[i][j] = 0
-            }
+        for i in combBuffersL.indices {
+            combBuffersL[i].withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            combBuffersR[i].withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         }
-        for i in 0..<allpassBuffersL.count {
-            for j in 0..<allpassBuffersL[i].count {
-                allpassBuffersL[i][j] = 0
-                allpassBuffersR[i][j] = 0
-            }
+        for i in allpassBuffersL.indices {
+            allpassBuffersL[i].withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            allpassBuffersR[i].withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         }
-        for i in 0..<4 {
-            combIndices[i] = 0
-            dampStateL[i] = 0
-            dampStateR[i] = 0
-        }
-        for i in 0..<2 {
-            allpassIndices[i] = 0
-        }
+
+        combIndices.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        dampStateL.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        dampStateR.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        allpassIndices.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
     }
 
     var parameters: [ParameterDescriptor] {

@@ -428,9 +428,7 @@ final class DSPState: ObservableObject {
 
     /// Clear all EQ band solos
     func clearAllEQSolo() {
-        for i in 0..<eqBands.count {
-            eqBands[i].solo = false
-        }
+        for i in eqBands.indices { eqBands[i].solo = false }
         syncEQToChain()
     }
 

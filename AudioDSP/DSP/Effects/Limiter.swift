@@ -86,10 +86,7 @@ final class Limiter: Effect, @unchecked Sendable {
 
     func reset() {
         audioDelayLine.reset()
-        // Clear peak buffer without allocation (audio-thread safe)
-        for i in 0..<lookaheadSamples {
-            peakBuffer[i] = 0
-        }
+        peakBuffer.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         peakWriteIndex = 0
         currentGain = 1.0
         gainReductionDb = 0

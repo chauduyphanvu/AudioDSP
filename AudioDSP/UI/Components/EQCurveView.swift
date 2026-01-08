@@ -191,7 +191,6 @@ struct EQCurveView: View {
     private func draggableBandMarker(index: Int, size: CGSize) -> some View {
         let band = bands[index]
         let freq = isDragging && draggingBandIndex == index ? currentDragFreq : band.frequency
-        let gain = isDragging && draggingBandIndex == index ? currentDragGain : band.gainDb
 
         let x = freqToX(freq, width: size.width)
         let magnitude = calculateMagnitudeForBand(at: freq, bandIndex: index)
@@ -243,7 +242,6 @@ struct EQCurveView: View {
 
         let leftX = freqToX(max(lowerFreq, minFreq), width: size.width)
         let rightX = freqToX(min(upperFreq, maxFreq), width: size.width)
-        let centerX = freqToX(centerFreq, width: size.width)
 
         let magnitude = calculateMagnitude(at: centerFreq)
         let db = linearToDb(magnitude)

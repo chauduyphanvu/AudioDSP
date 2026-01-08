@@ -471,11 +471,9 @@ struct BandControl: View {
         }
     }
 
-    /// Change band type and clamp Q to the new type's valid range
+    /// Change band type and adjust Q: reset to default if too low, clamp if too high
     private func changeBandType(to newType: BandType) {
         band.bandType = newType
-
-        // Clamp Q to the new filter type's valid range
         let newRange = newType.qRange
         if band.q < newRange.lowerBound {
             band.q = newType.defaultQ

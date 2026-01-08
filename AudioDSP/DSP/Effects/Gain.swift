@@ -36,15 +36,11 @@ final class Gain: Effect, @unchecked Sendable {
     }
 
     func getParameter(_ index: Int) -> Float {
-        switch index {
-        case 0: return gainDb
-        default: return 0
-        }
+        index == 0 ? gainDb : 0
     }
 
     func setParameter(_ index: Int, value: Float) {
-        if index == 0 {
-            setGainDb(value.clamped(to: -24...24))
-        }
+        guard index == 0 else { return }
+        setGainDb(value.clamped(to: -24...24))
     }
 }
