@@ -22,14 +22,15 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Master panel (always visible)
-            MasterPanel(
-                state: state,
-                presetManager: presetManager,
-                audioEngine: audioEngine
-            )
-            .padding(16)
+        ZStack {
+            VStack(spacing: 0) {
+                // Master panel (always visible)
+                MasterPanel(
+                    state: state,
+                    presetManager: presetManager,
+                    audioEngine: audioEngine
+                )
+                .padding(16)
 
             // Tab selector
             HStack(spacing: 0) {
@@ -66,8 +67,12 @@ struct ContentView: View {
                 }
             }
             .background(DSPTheme.background)
+            }
+            .background(DSPTheme.background)
+
+            // Toast overlay for keyboard shortcut feedback
+            ToastOverlay()
         }
-        .background(DSPTheme.background)
         .onAppear {
             state.audioEngine = audioEngine
             Task {

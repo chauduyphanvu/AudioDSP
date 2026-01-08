@@ -359,17 +359,41 @@ final class DSPState: ObservableObject {
 
     // MARK: - Bypass Toggles
 
-    func toggleEQBypass() { registerUndo(); eqBypassed.toggle(); syncToChain() }
-    func toggleCompressorBypass() { registerUndo(); compressorBypassed.toggle(); syncToChain() }
-    func toggleLimiterBypass() { registerUndo(); limiterBypassed.toggle(); syncToChain() }
-    func toggleReverbBypass() { registerUndo(); reverbBypassed.toggle(); syncToChain() }
-    func toggleDelayBypass() { registerUndo(); delayBypassed.toggle(); syncToChain() }
-    func toggleStereoWidenerBypass() { registerUndo(); stereoWidenerBypassed.toggle(); syncToChain() }
-    func toggleBassEnhancerBypass() { registerUndo(); bassEnhancerBypassed.toggle(); syncToChain() }
-    func toggleVocalClarityBypass() { registerUndo(); vocalClarityBypassed.toggle(); syncToChain() }
+    func toggleEQBypass(showToast: Bool = true) {
+        registerUndo(); eqBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "EQ", enabled: !eqBypassed) }
+    }
+    func toggleCompressorBypass(showToast: Bool = true) {
+        registerUndo(); compressorBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Compressor", enabled: !compressorBypassed) }
+    }
+    func toggleLimiterBypass(showToast: Bool = true) {
+        registerUndo(); limiterBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Limiter", enabled: !limiterBypassed) }
+    }
+    func toggleReverbBypass(showToast: Bool = true) {
+        registerUndo(); reverbBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Reverb", enabled: !reverbBypassed) }
+    }
+    func toggleDelayBypass(showToast: Bool = true) {
+        registerUndo(); delayBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Delay", enabled: !delayBypassed) }
+    }
+    func toggleStereoWidenerBypass(showToast: Bool = true) {
+        registerUndo(); stereoWidenerBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Stereo Widener", enabled: !stereoWidenerBypassed) }
+    }
+    func toggleBassEnhancerBypass(showToast: Bool = true) {
+        registerUndo(); bassEnhancerBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Bass Enhancer", enabled: !bassEnhancerBypassed) }
+    }
+    func toggleVocalClarityBypass(showToast: Bool = true) {
+        registerUndo(); vocalClarityBypassed.toggle(); syncToChain()
+        if showToast { ToastManager.shared.show(effect: "Vocal Clarity", enabled: !vocalClarityBypassed) }
+    }
 
     /// Toggle bypass for all effects at once
-    func toggleBypassAll() {
+    func toggleBypassAll(showToast: Bool = true) {
         registerUndo()
         let allBypassed = eqBypassed && compressorBypassed && limiterBypassed &&
                           reverbBypassed && delayBypassed && stereoWidenerBypassed &&
@@ -385,6 +409,10 @@ final class DSPState: ObservableObject {
         bassEnhancerBypassed = newState
         vocalClarityBypassed = newState
         syncToChain()
+
+        if showToast {
+            ToastManager.shared.show(effect: "All Effects", enabled: !newState)
+        }
     }
 
     /// Reset all parameters to defaults
@@ -447,6 +475,7 @@ final class DSPState: ObservableObject {
         outputGainBypassed = false
 
         syncToChain()
+        ToastManager.shared.show(action: "Parameters Reset", icon: "arrow.counterclockwise.circle.fill")
     }
 
     // MARK: - Undo/Redo
@@ -459,16 +488,20 @@ final class DSPState: ObservableObject {
         updateUndoState()
     }
 
-    func undo() {
+    func undo(showToast: Bool = true) {
+        guard undoManager.canUndo else { return }
         undoManager.undo()
         updateUndoState()
         syncToChain()
+        if showToast { ToastManager.shared.show(action: "Undo", icon: "arrow.uturn.backward.circle.fill") }
     }
 
-    func redo() {
+    func redo(showToast: Bool = true) {
+        guard undoManager.canRedo else { return }
         undoManager.redo()
         updateUndoState()
         syncToChain()
+        if showToast { ToastManager.shared.show(action: "Redo", icon: "arrow.uturn.forward.circle.fill") }
     }
 
     private func updateUndoState() {
@@ -490,7 +523,7 @@ final class DSPState: ObservableObject {
         }
     }
 
-    func switchABSlot() {
+    func switchABSlot(showToast: Bool = true) {
         // Save current to current slot
         copyToCurrentSlot()
 
@@ -503,6 +536,11 @@ final class DSPState: ObservableObject {
         }
 
         syncToChain()
+
+        if showToast {
+            let slotName = abSlot == .a ? "A" : "B"
+            ToastManager.shared.show(action: "Slot \(slotName)", icon: "a.square.fill")
+        }
     }
 
     // MARK: - Snapshots

@@ -74,7 +74,7 @@ final class PresetManager: ObservableObject {
         guard !presets.isEmpty else { return }
         let currentIndex = presets.firstIndex(where: { $0.id == currentPreset?.id }) ?? 0
         let previousIndex = (currentIndex - 1 + presets.count) % presets.count
-        load(presets[previousIndex], into: state)
+        load(presets[previousIndex], into: state, showToast: true)
     }
 
     /// Load the next preset in the list
@@ -82,11 +82,15 @@ final class PresetManager: ObservableObject {
         guard !presets.isEmpty else { return }
         let currentIndex = presets.firstIndex(where: { $0.id == currentPreset?.id }) ?? -1
         let nextIndex = (currentIndex + 1) % presets.count
-        load(presets[nextIndex], into: state)
+        load(presets[nextIndex], into: state, showToast: true)
     }
 
-    func load(_ preset: Preset, into state: DSPState) {
+    func load(_ preset: Preset, into state: DSPState, showToast: Bool = false) {
         currentPreset = preset
+
+        if showToast {
+            ToastManager.shared.show(action: preset.name, icon: "doc.fill")
+        }
 
         for effectPreset in preset.effects {
             switch effectPreset.effectType {
