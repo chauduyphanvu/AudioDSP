@@ -9,6 +9,7 @@ struct EQBandState: Equatable, Codable {
     var q: Float
     var bandType: BandType
     var solo: Bool = false
+    var enabled: Bool = true  // Band can be disabled to save CPU
 
     /// Bandwidth in octaves (derived from Q)
     var bandwidthOctaves: Float {
@@ -21,6 +22,21 @@ struct EQBandState: Equatable, Codable {
             return String(format: "%.2f (%.1f oct)", q, bandwidthOctaves)
         }
         return String(format: "%.2f", q)
+    }
+}
+
+/// EQ processing mode
+enum EQProcessingMode: String, CaseIterable, Codable {
+    case minimumPhase = "Minimum Phase"
+    case linearPhase = "Linear Phase"
+
+    var description: String {
+        switch self {
+        case .minimumPhase:
+            return "Lower latency, suitable for tracking"
+        case .linearPhase:
+            return "No phase shift, ideal for mastering"
+        }
     }
 }
 
@@ -41,6 +57,7 @@ final class DSPState: ObservableObject {
         EQBandState(frequency: 12000, gainDb: 0, q: 0.707, bandType: .highShelf),
     ]
     @Published var eqBypassed: Bool = false
+    @Published var eqProcessingMode: EQProcessingMode = .minimumPhase
 
     // MARK: - Compressor Parameters
 
@@ -105,6 +122,28 @@ final class DSPState: ObservableObject {
     @Published var outputLevelRight: Float = 0
     @Published var spectrumData: [Float] = []
 
+    // Analyzer hold/freeze feature - captures spectrum for analysis while adjusting EQ
+    @Published var analyzerHoldEnabled: Bool = false
+    @Published var heldSpectrumData: [Float] = []
+
+    /// Toggle analyzer hold - when enabled, freezes the current spectrum display
+    func toggleAnalyzerHold() {
+        if !analyzerHoldEnabled {
+            // Capture current spectrum when enabling hold
+            heldSpectrumData = spectrumData
+        }
+        analyzerHoldEnabled.toggle()
+        ToastManager.shared.show(
+            action: analyzerHoldEnabled ? "Analyzer Held" : "Analyzer Released",
+            icon: analyzerHoldEnabled ? "pause.circle.fill" : "play.circle.fill"
+        )
+    }
+
+    /// Get the spectrum data to display (held or live)
+    var displaySpectrumData: [Float] {
+        analyzerHoldEnabled ? heldSpectrumData : spectrumData
+    }
+
     // MARK: - A/B Comparison
 
     @Published var abSlot: ABSlot = .a
@@ -127,61 +166,63 @@ final class DSPState: ObservableObject {
 
     private func setupBindings() {
         // Sync state changes to DSP chain
+        // Reduced debounce to 8ms for more responsive UI feedback
+        // DSP-side parameter smoothing (5ms) handles zipper noise prevention
         $eqBands
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncEQToChain() }
             .store(in: &cancellables)
 
         // Sync output gain changes to DSP chain
         $outputGain
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncOutputGainToChain() }
             .store(in: &cancellables)
 
         // Sync compressor changes
         Publishers.CombineLatest4($compressorThreshold, $compressorRatio, $compressorAttack, $compressorRelease)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncCompressorToChain() }
             .store(in: &cancellables)
 
         $compressorMakeup
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncCompressorToChain() }
             .store(in: &cancellables)
 
         // Sync limiter changes
         Publishers.CombineLatest($limiterCeiling, $limiterRelease)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncLimiterToChain() }
             .store(in: &cancellables)
 
         // Sync reverb changes
         Publishers.CombineLatest4($reverbRoomSize, $reverbDamping, $reverbWidth, $reverbMix)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncReverbToChain() }
             .store(in: &cancellables)
 
         // Sync delay changes
         Publishers.CombineLatest3($delayTime, $delayFeedback, $delayMix)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncDelayToChain() }
             .store(in: &cancellables)
 
         // Sync stereo widener changes
         $stereoWidth
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncStereoWidenerToChain() }
             .store(in: &cancellables)
 
         // Sync bass enhancer changes
         Publishers.CombineLatest3($bassAmount, $bassLowFreq, $bassHarmonics)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncBassEnhancerToChain() }
             .store(in: &cancellables)
 
         // Sync vocal clarity changes
         Publishers.CombineLatest($vocalClarity, $vocalAir)
-            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(8), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.syncVocalClarityToChain() }
             .store(in: &cancellables)
     }
@@ -265,7 +306,12 @@ final class DSPState: ObservableObject {
         for (index, band) in eqBands.enumerated() {
             eq.setBand(index, bandType: band.bandType, frequency: band.frequency, gainDb: band.gainDb, q: band.q)
             eq.setSolo(index, solo: band.solo)
+            eq.setBandEnabled(index, enabled: band.enabled)
         }
+
+        // Note: Linear phase mode would require a different processing path
+        // Currently using minimum phase (IIR biquads) for all processing
+        // Linear phase support would use FFT-based convolution with symmetric FIR
     }
 
     private func syncOutputGainToChain() {
@@ -486,6 +532,12 @@ final class DSPState: ObservableObject {
             target.restoreSnapshot(snapshot)
         }
         updateUndoState()
+    }
+
+    /// Register undo for EQ band changes (call at drag start, not during drag)
+    /// This prevents polluting the undo stack with intermediate drag states
+    func registerUndoForEQBandChange() {
+        registerUndo()
     }
 
     func undo(showToast: Bool = true) {

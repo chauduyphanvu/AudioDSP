@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Filter type for biquad coefficient calculation
 enum BiquadFilterType {
@@ -137,12 +138,14 @@ struct BiquadParams {
 /// Direct Form 2 Transposed biquad filter implementation with parameter smoothing
 /// CRITICAL FIX: Interpolates parameters (not coefficients) to guarantee filter stability
 /// Coefficient interpolation can cause poles to move outside the unit circle during transitions
+/// Thread-safe: uses os_unfair_lock for parameter updates shared between UI and audio threads
 final class Biquad: @unchecked Sendable {
     private var currentCoeffs: BiquadCoefficients
     private var z1: Float = 0
     private var z2: Float = 0
 
     // Parameter smoothing state - interpolate parameters to guarantee stability
+    // Protected by paramsLock for thread-safe access between UI and audio threads
     private var currentParams: BiquadParams
     private var targetParams: BiquadParams
     private var smoothingCounter: Int = 0
@@ -152,6 +155,10 @@ final class Biquad: @unchecked Sendable {
     // Recalculation interval during smoothing (every N samples for CPU efficiency)
     private let recalcInterval: Int = 32
     private var recalcCounter: Int = 0
+
+    // Thread-safety lock for parameter updates
+    // os_unfair_lock is the fastest lock on Apple platforms, suitable for real-time audio
+    private var paramsLock = os_unfair_lock()
 
     init(coefficients: BiquadCoefficients = BiquadCoefficients(), sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
@@ -179,6 +186,9 @@ final class Biquad: @unchecked Sendable {
     /// Update target parameters - will smoothly interpolate to new values
     /// This method is thread-safe and can be called from any thread
     func updateParameters(_ newParams: BiquadParams) {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+
         // If already smoothing, snap currentParams to where we are now
         // to avoid interpolating from stale values
         if smoothingCounter > 0 {
@@ -235,6 +245,10 @@ final class Biquad: @unchecked Sendable {
 
     @inline(__always)
     func process(_ input: Float) -> Float {
+        // Acquire lock briefly to read/update smoothing state
+        // This is necessary because updateParameters can be called from UI thread
+        os_unfair_lock_lock(&paramsLock)
+
         // Parameter interpolation for smooth, stable transitions
         if smoothingCounter > 0 {
             recalcCounter -= 1
@@ -294,13 +308,17 @@ final class Biquad: @unchecked Sendable {
             }
         }
 
-        // Direct Form II Transposed processing
+        // Release lock before filter processing (filter state is audio-thread only)
+        os_unfair_lock_unlock(&paramsLock)
+
+        // Direct Form II Transposed processing (no lock needed - audio thread only)
         let output = currentCoeffs.b0 * input + z1
         z1 = currentCoeffs.b1 * input - currentCoeffs.a1 * output + z2
         z2 = currentCoeffs.b2 * input - currentCoeffs.a2 * output
 
-        // Flush denormals using threshold check
-        // Note: Hardware FTZ/DAZ is set at audio callback level for efficiency
+        // Flush denormals using threshold check as safety net
+        // ARM64 (Apple Silicon) has FTZ enabled by default
+        // These checks provide additional protection and are very low cost
         if abs(z1) < 1e-15 { z1 = 0 }
         if abs(z2) < 1e-15 { z2 = 0 }
 
@@ -352,6 +370,29 @@ enum BandType: Int, Codable, Sendable {
     var qLabel: String {
         isResonant ? "Res" : "Q"
     }
+
+    /// Returns the appropriate Q range for this filter type
+    /// Shelves work well with 0.5-2.0, peaks/resonant with 0.3-10
+    var qRange: ClosedRange<Float> {
+        switch self {
+        case .lowShelf, .highShelf:
+            return 0.5...2.0
+        case .peak, .lowPass, .highPass:
+            return 0.3...10.0
+        }
+    }
+
+    /// Returns the default Q value for this filter type
+    var defaultQ: Float {
+        switch self {
+        case .lowShelf, .highShelf:
+            return 0.707  // Butterworth Q for flat response
+        case .peak:
+            return 1.0
+        case .lowPass, .highPass:
+            return 0.707  // Butterworth Q
+        }
+    }
 }
 
 /// Thread-safe atomic parameter block for EQ band
@@ -373,26 +414,60 @@ struct EQBandParams: @unchecked Sendable {
 }
 
 /// Single EQ band with stereo processing and thread-safe parameter updates
-/// CRITICAL FIX: Uses atomic parameter block for thread safety between UI and audio threads
+/// Uses os_unfair_lock for truly atomic parameter updates between UI and audio threads
+/// Enabled flag uses atomic operations to avoid lock acquisition on every sample
 final class EQBand: @unchecked Sendable {
     private var filterLeft: Biquad
     private var filterRight: Biquad
     private let sampleRate: Float
 
-    // Atomic parameter storage for thread-safe access
-    // UI thread writes, audio thread reads
+    // Thread-safe parameter storage using lock for atomic struct access
+    // os_unfair_lock is the fastest lock available and safe for real-time audio
     private var params: EQBandParams
+    private var paramsLock = os_unfair_lock()
 
-    // Public read-only access to current parameters
-    var bandType: BandType { params.bandType }
-    var frequency: Float { params.frequency }
-    var gainDb: Float { params.gainDb }
-    var q: Float { params.q }
-    var solo: Bool { params.solo }
+    // Atomic enabled flag - uses OSAtomic for lock-free access on every sample
+    // This avoids 240,000+ lock acquisitions per second (5 bands * 48kHz)
+    private let enabledFlagPtr: UnsafeMutablePointer<Int32>
+
+    var enabled: Bool {
+        OSAtomicAdd32(0, enabledFlagPtr) != 0
+    }
+
+    // Public read-only access to current parameters (thread-safe)
+    var bandType: BandType {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return params.bandType
+    }
+    var frequency: Float {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return params.frequency
+    }
+    var gainDb: Float {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return params.gainDb
+    }
+    var q: Float {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return params.q
+    }
+    var solo: Bool {
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return params.solo
+    }
 
     init(sampleRate: Float, bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
         self.sampleRate = sampleRate
         self.params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
+
+        // Allocate atomic enabled flag (1 = enabled)
+        self.enabledFlagPtr = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+        enabledFlagPtr.initialize(to: 1)
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
@@ -405,15 +480,24 @@ final class EQBand: @unchecked Sendable {
         self.filterRight = Biquad(params: biquadParams, sampleRate: sampleRate)
     }
 
-    @inline(__always)
-    func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        (filterLeft.process(left), filterRight.process(right))
+    deinit {
+        enabledFlagPtr.deinitialize(count: 1)
+        enabledFlagPtr.deallocate()
     }
 
-    /// Thread-safe parameter update
+    @inline(__always)
+    func process(left: Float, right: Float) -> (left: Float, right: Float) {
+        // Fast path: skip processing if band is disabled (lock-free atomic read)
+        guard OSAtomicAdd32(0, enabledFlagPtr) != 0 else { return (left, right) }
+
+        return (filterLeft.process(left), filterRight.process(right))
+    }
+
+    /// Thread-safe parameter update using os_unfair_lock
     /// All parameters are updated atomically to prevent partial state reads
     func update(bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
-        // Update atomic parameter block
+        // Update parameter block atomically
+        os_unfair_lock_lock(&paramsLock)
         params = EQBandParams(
             bandType: bandType,
             frequency: frequency,
@@ -421,8 +505,9 @@ final class EQBand: @unchecked Sendable {
             q: q,
             solo: params.solo
         )
+        os_unfair_lock_unlock(&paramsLock)
 
-        // Update filter parameters with smoothing
+        // Update filter parameters with smoothing (biquad has its own thread-safety)
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
             frequency: frequency,
@@ -434,8 +519,9 @@ final class EQBand: @unchecked Sendable {
         filterRight.updateParameters(biquadParams)
     }
 
-    /// Update solo state
+    /// Update solo state atomically
     func setSolo(_ solo: Bool) {
+        os_unfair_lock_lock(&paramsLock)
         params = EQBandParams(
             bandType: params.bandType,
             frequency: params.frequency,
@@ -443,6 +529,25 @@ final class EQBand: @unchecked Sendable {
             q: params.q,
             solo: solo
         )
+        os_unfair_lock_unlock(&paramsLock)
+    }
+
+    /// Set enabled state - disabled bands skip processing for CPU efficiency
+    /// Uses atomic operations for lock-free access on the audio thread
+    func setEnabled(_ enabled: Bool) {
+        // Atomic write using compare-and-swap loop
+        let newValue: Int32 = enabled ? 1 : 0
+        while true {
+            let oldValue = OSAtomicAdd32(0, enabledFlagPtr)
+            if oldValue == newValue { break }
+            if OSAtomicCompareAndSwap32(oldValue, newValue, enabledFlagPtr) { break }
+        }
+
+        // Reset filter state when re-enabling to avoid artifacts
+        if enabled {
+            filterLeft.reset()
+            filterRight.reset()
+        }
     }
 
     func reset() {

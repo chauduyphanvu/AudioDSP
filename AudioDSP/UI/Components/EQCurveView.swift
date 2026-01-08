@@ -6,6 +6,7 @@ struct EQCurveView: View {
     var bandSoloStates: [Bool] = []
     var selectedBand: Int?
     var onBandSelected: ((Int) -> Void)?
+    var onBandDragStarted: ((Int) -> Void)?  // Called when drag begins (for undo registration)
     var onBandDragged: ((Int, Float, Float) -> Void)?  // (bandIndex, newFreq, newGain)
     var height: CGFloat = 150
     var sampleRate: Float = 48000
@@ -21,6 +22,11 @@ struct EQCurveView: View {
     @State private var currentDragFreq: Float = 0
     @State private var currentDragGain: Float = 0
     @GestureState private var dragOffset: CGSize = .zero
+
+    // Cached coefficients for frequency response calculation
+    // Prevents recalculating coefficients for every frequency point
+    @State private var cachedCoefficients: [BiquadCoefficients] = []
+    @State private var lastBandParams: [(Float, Float, Float, BandType)] = []
 
     private let minFreq: Float = 20
     private let maxFreq: Float = 20000
@@ -100,6 +106,12 @@ struct EQCurveView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(DSPTheme.borderColor, lineWidth: 1)
         )
+        .onAppear {
+            updateCachedCoefficients()
+        }
+        .onChange(of: bands.map { "\($0.frequency)-\($0.gainDb)-\($0.q)-\($0.bandType.rawValue)" }) { _, _ in
+            updateCachedCoefficients()
+        }
     }
 
     // MARK: - Dragging Logic
@@ -124,6 +136,8 @@ struct EQCurveView: View {
                     currentDragFreq = band.frequency
                     currentDragGain = band.gainDb
                     onBandSelected?(index)
+                    // Register undo at drag start (not during drag) to avoid polluting undo stack
+                    onBandDragStarted?(index)
                     return
                 }
             }
@@ -415,15 +429,23 @@ struct EQCurveView: View {
     private func calculateMagnitude(at frequency: Float) -> Float {
         var magnitude: Float = 1.0
 
-        for band in bands {
-            let bandMagnitude = calculateBandMagnitude(
-                at: frequency,
-                bandFreq: band.frequency,
-                gainDb: band.gainDb,
-                q: band.q,
-                bandType: band.bandType
-            )
-            magnitude *= bandMagnitude
+        // Use cached coefficients if available for better performance
+        if cachedCoefficients.count == bands.count {
+            for coeffs in cachedCoefficients {
+                magnitude *= calculateBandMagnitudeWithCachedCoeffs(at: frequency, coeffs: coeffs)
+            }
+        } else {
+            // Fallback to calculating coefficients on-the-fly
+            for band in bands {
+                let bandMagnitude = calculateBandMagnitude(
+                    at: frequency,
+                    bandFreq: band.frequency,
+                    gainDb: band.gainDb,
+                    q: band.q,
+                    bandType: band.bandType
+                )
+                magnitude *= bandMagnitude
+            }
         }
 
         return magnitude
@@ -448,6 +470,48 @@ struct EQCurveView: View {
         }
 
         return magnitude
+    }
+
+    /// Update cached coefficients if band parameters have changed
+    private func updateCachedCoefficients() {
+        let currentParams = bands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType) }
+
+        // Check if parameters have changed
+        let needsUpdate = lastBandParams.count != currentParams.count ||
+            zip(lastBandParams, currentParams).contains { old, new in
+                old.0 != new.0 || old.1 != new.1 || old.2 != new.2 || old.3 != new.3
+            }
+
+        if needsUpdate {
+            cachedCoefficients = bands.map { band in
+                BiquadCoefficients.calculate(
+                    type: band.bandType.toBiquadType(gainDb: band.gainDb),
+                    sampleRate: sampleRate,
+                    frequency: band.frequency,
+                    q: band.q
+                )
+            }
+            lastBandParams = currentParams
+        }
+    }
+
+    /// Calculate magnitude using cached coefficients for efficiency
+    private func calculateBandMagnitudeWithCachedCoeffs(at freq: Float, coeffs: BiquadCoefficients) -> Float {
+        let omega = 2.0 * Float.pi * freq / sampleRate
+        let cosOmega = cos(omega)
+        let cos2Omega = cos(2.0 * omega)
+        let sinOmega = sin(omega)
+        let sin2Omega = sin(2.0 * omega)
+
+        let numReal = coeffs.b0 + coeffs.b1 * cosOmega + coeffs.b2 * cos2Omega
+        let numImag = -coeffs.b1 * sinOmega - coeffs.b2 * sin2Omega
+        let denReal = 1.0 + coeffs.a1 * cosOmega + coeffs.a2 * cos2Omega
+        let denImag = -coeffs.a1 * sinOmega - coeffs.a2 * sin2Omega
+
+        let numMag = sqrt(numReal * numReal + numImag * numImag)
+        let denMag = sqrt(denReal * denReal + denImag * denImag)
+
+        return numMag / max(denMag, 1e-10)
     }
 
     private func calculateBandMagnitude(at freq: Float, bandFreq: Float, gainDb: Float, q: Float, bandType: BandType) -> Float {

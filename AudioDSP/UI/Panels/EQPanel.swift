@@ -10,7 +10,7 @@ struct EQPanel: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Header with phase toggle
+            // Header with mode and phase toggle
             HStack {
                 EffectHeader(
                     name: "Parametric EQ",
@@ -18,6 +18,36 @@ struct EQPanel: View {
                     onToggle: { state.toggleEQBypass() }
                 )
                 Spacer()
+
+                // Processing mode picker (Linear vs Minimum Phase)
+                Menu {
+                    ForEach(EQProcessingMode.allCases, id: \.self) { mode in
+                        Button(action: { state.eqProcessingMode = mode }) {
+                            HStack {
+                                Text(mode.rawValue)
+                                if state.eqProcessingMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: state.eqProcessingMode == .linearPhase ? "waveform.path" : "waveform")
+                            .font(.system(size: 10))
+                        Text(state.eqProcessingMode == .linearPhase ? "Linear" : "Min φ")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(state.eqProcessingMode == .linearPhase ? DSPTheme.accent : DSPTheme.textTertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(state.eqProcessingMode == .linearPhase ? DSPTheme.accent.opacity(0.15) : DSPTheme.surfaceBackground)
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .help(state.eqProcessingMode.description)
 
                 // Phase response toggle
                 Button(action: { showPhaseResponse.toggle() }) {
@@ -37,6 +67,25 @@ struct EQPanel: View {
                 }
                 .buttonStyle(.plain)
 
+                // Analyzer hold/freeze button
+                Button(action: { state.toggleAnalyzerHold() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: state.analyzerHoldEnabled ? "pause.circle.fill" : "pause.circle")
+                            .font(.system(size: 10))
+                        Text("Hold")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(state.analyzerHoldEnabled ? DSPTheme.meterOrange : DSPTheme.textTertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(state.analyzerHoldEnabled ? DSPTheme.meterOrange.opacity(0.15) : DSPTheme.surfaceBackground)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Hold/freeze spectrum for analysis")
+
                 // Clear solo button (shown when any band is soloed)
                 if state.hasEQSolo {
                     Button(action: { state.clearAllEQSolo() }) {
@@ -55,17 +104,22 @@ struct EQPanel: View {
             }
 
             // EQ Curve visualization with spectrum overlay
+            // Uses held spectrum when analyzer hold is enabled
             EQCurveView(
                 bands: state.eqBands.map { ($0.frequency, $0.gainDb, $0.q, $0.bandType) },
                 bandSoloStates: state.eqBands.map { $0.solo },
                 selectedBand: selectedBand,
                 onBandSelected: { selectedBand = $0 },
+                onBandDragStarted: { _ in
+                    // Register undo at drag start to capture pre-drag state
+                    state.registerUndoForEQBandChange()
+                },
                 onBandDragged: { index, freq, gain in
                     state.eqBands[index].frequency = freq
                     state.eqBands[index].gainDb = gain
                 },
                 sampleRate: sampleRate,
-                spectrumData: spectrumData,
+                spectrumData: state.analyzerHoldEnabled ? state.heldSpectrumData : spectrumData,
                 showPhaseResponse: showPhaseResponse
             )
             .frame(height: 140)
@@ -89,7 +143,7 @@ struct EQPanel: View {
     }
 }
 
-/// Individual EQ band control with solo and resonance/Q display
+/// Individual EQ band control with solo, enable, and resonance/Q display
 struct BandControl: View {
     @Binding var band: EQBandState
     let index: Int
@@ -124,18 +178,27 @@ struct BandControl: View {
         VStack(spacing: 6) {
             // Band type selector and label
             HStack(spacing: 4) {
+                // Enable/disable button
+                Button(action: { band.enabled.toggle() }) {
+                    Circle()
+                        .fill(band.enabled ? DSPTheme.effectEnabled : DSPTheme.textDisabled)
+                        .frame(width: 8, height: 8)
+                }
+                .buttonStyle(.plain)
+                .help(band.enabled ? "Disable band (saves CPU)" : "Enable band")
+
                 Menu {
-                    Button("Low Shelf") { band.bandType = .lowShelf }
-                    Button("Peak") { band.bandType = .peak }
-                    Button("High Shelf") { band.bandType = .highShelf }
+                    Button("Low Shelf") { changeBandType(to: .lowShelf) }
+                    Button("Peak") { changeBandType(to: .peak) }
+                    Button("High Shelf") { changeBandType(to: .highShelf) }
                     Divider()
-                    Button("Low Pass") { band.bandType = .lowPass }
-                    Button("High Pass") { band.bandType = .highPass }
+                    Button("Low Pass") { changeBandType(to: .lowPass) }
+                    Button("High Pass") { changeBandType(to: .highPass) }
                 } label: {
                     HStack(spacing: 4) {
                         Text(bandName)
                             .font(DSPTypography.caption)
-                            .foregroundColor(isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary)
+                            .foregroundColor(band.enabled ? (isSelected ? DSPTheme.eqBandColors[index] : DSPTheme.textSecondary) : DSPTheme.textDisabled)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8))
                             .foregroundColor(DSPTheme.textTertiary)
@@ -198,13 +261,14 @@ struct BandControl: View {
             }
 
             // Q/Resonance knob with bandwidth display
+            // Uses filter-specific Q ranges: shelves (0.5-2.0), peaks/resonant (0.3-10)
             VStack(spacing: 2) {
                 CompactKnob(
                     value: $band.q,
-                    range: 0.1...10,
+                    range: band.bandType.qRange,
                     label: qParameterLabel,
                     unit: .generic,
-                    defaultValue: defaultQ
+                    defaultValue: band.bandType.defaultQ
                 )
 
                 // Show bandwidth in octaves for peak filters
@@ -222,6 +286,7 @@ struct BandControl: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(isSelected ? DSPTheme.eqBandColors[index].opacity(0.5) : Color.clear, lineWidth: 1)
         )
+        .opacity(band.enabled ? 1.0 : 0.5)  // Dim disabled bands
     }
 
     private var bandTypeLabel: String {
@@ -231,6 +296,19 @@ struct BandControl: View {
         case .peak: return "PK"
         case .lowPass: return "LP"
         case .highPass: return "HP"
+        }
+    }
+
+    /// Change band type and clamp Q to the new type's valid range
+    private func changeBandType(to newType: BandType) {
+        band.bandType = newType
+
+        // Clamp Q to the new filter type's valid range
+        let newRange = newType.qRange
+        if band.q < newRange.lowerBound {
+            band.q = newType.defaultQ
+        } else if band.q > newRange.upperBound {
+            band.q = newRange.upperBound
         }
     }
 }
