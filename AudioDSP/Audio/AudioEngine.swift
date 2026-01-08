@@ -10,7 +10,9 @@ final class AudioEngine: ObservableObject {
     // dspChain and fftAnalyzer need internal access for UI
     nonisolated(unsafe) let dspChain: DSPChain
     nonisolated(unsafe) let fftAnalyzer: FFTAnalyzer
-    nonisolated(unsafe) fileprivate let ringBuffer = StereoRingBuffer(capacity: 48000 * 2)
+    // Ring buffer sized for low latency: 4096 samples = ~85ms at 48kHz
+    // This provides enough headroom for callback timing differences while keeping latency low
+    nonisolated(unsafe) fileprivate let ringBuffer = StereoRingBuffer(capacity: 4096)
     nonisolated(unsafe) fileprivate var inputUnit: AudioUnit?
     nonisolated(unsafe) private var outputUnit: AudioUnit?
 
