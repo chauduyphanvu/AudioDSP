@@ -3,9 +3,10 @@ import os
 
 /// Thread-safe wrapper for parameters accessed from both UI and audio threads.
 /// Uses os_unfair_lock for minimal overhead in real-time audio contexts.
+/// Note: os_unfair_lock must have stable memory address - safe here because this is a final class.
 final class ThreadSafeValue<T>: @unchecked Sendable {
     private var value: T
-    private var lock = os_unfair_lock()
+    private var lock = os_unfair_lock()  // Safe: final class has stable address
 
     init(_ initialValue: T) {
         self.value = initialValue
@@ -47,39 +48,27 @@ final class ThreadSafeValue<T>: @unchecked Sendable {
     }
 }
 
-/// Atomic boolean flag using lock-free operations for ultra-low-overhead audio thread access.
-/// Preferred over ThreadSafeValue<Bool> when the flag is read on every sample.
-/// Uses Swift's native atomic support via UnsafeAtomic pattern with memory ordering.
+/// Thread-safe boolean flag using os_unfair_lock for correct synchronization.
+/// Safe for use between UI and audio threads with minimal overhead.
+/// Note: os_unfair_lock must have stable memory address - safe here because this is a final class.
 final class AtomicBool: @unchecked Sendable {
-    private let storage: UnsafeMutablePointer<Int32>
+    private var storage: Bool
+    private var lock = os_unfair_lock()  // Safe: final class has stable address
 
     init(_ initialValue: Bool) {
-        storage = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        storage.initialize(to: initialValue ? 1 : 0)
-    }
-
-    deinit {
-        storage.deinitialize(count: 1)
-        storage.deallocate()
+        storage = initialValue
     }
 
     var value: Bool {
         get {
-            // Atomic load with acquire semantics
-            // On ARM64, this compiles to LDAR instruction
-            // On x86, plain load has acquire semantics
-            return withUnsafeMutablePointer(to: &storage.pointee) { ptr in
-                // Use memory barrier for correct ordering on ARM64
-                OSMemoryBarrier()
-                return ptr.pointee != 0
-            }
+            os_unfair_lock_lock(&lock)
+            defer { os_unfair_lock_unlock(&lock) }
+            return storage
         }
         set {
-            // Atomic store with release semantics
-            withUnsafeMutablePointer(to: &storage.pointee) { ptr in
-                ptr.pointee = newValue ? 1 : 0
-                OSMemoryBarrier()
-            }
+            os_unfair_lock_lock(&lock)
+            storage = newValue
+            os_unfair_lock_unlock(&lock)
         }
     }
 }
@@ -125,38 +114,28 @@ final class AtomicBitmask: @unchecked Sendable {
     }
 }
 
-/// Atomic flag for signaling state changes between threads (e.g., reset requests).
-/// Implements test-and-set semantics for single-producer, single-consumer scenarios.
+/// Thread-safe flag for signaling state changes between threads (e.g., reset requests).
+/// Uses os_unfair_lock for correct atomic test-and-set semantics.
+/// Note: os_unfair_lock must have stable memory address - safe here because this is a final class.
 final class AtomicFlag: @unchecked Sendable {
-    private let storage: UnsafeMutablePointer<Int32>
+    private var isSet: Bool = false
+    private var lock = os_unfair_lock()  // Safe: final class has stable address
 
-    init() {
-        storage = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-        storage.initialize(to: 0)
-    }
-
-    deinit {
-        storage.deinitialize(count: 1)
-        storage.deallocate()
-    }
+    init() {}
 
     /// Set the flag (signal)
     func set() {
-        withUnsafeMutablePointer(to: &storage.pointee) { ptr in
-            ptr.pointee = 1
-            OSMemoryBarrier()
-        }
+        os_unfair_lock_lock(&lock)
+        isSet = true
+        os_unfair_lock_unlock(&lock)
     }
 
-    /// Test and clear the flag. Returns true if the flag was set.
-    /// Uses memory barrier to ensure visibility across threads.
+    /// Atomically test and clear the flag. Returns true if the flag was set.
     func testAndClear() -> Bool {
-        OSMemoryBarrier()
-        let wasSet = storage.pointee != 0
-        if wasSet {
-            storage.pointee = 0
-            OSMemoryBarrier()
-        }
+        os_unfair_lock_lock(&lock)
+        let wasSet = isSet
+        isSet = false
+        os_unfair_lock_unlock(&lock)
         return wasSet
     }
 }

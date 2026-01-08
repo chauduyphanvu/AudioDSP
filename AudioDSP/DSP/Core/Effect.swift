@@ -52,7 +52,7 @@ struct ParameterDescriptor: Identifiable, Sendable {
     }
 
     func clamp(_ value: Float) -> Float {
-        Swift.min(Swift.max(value, min), max)
+        value.clamped(to: min...max)
     }
 
     func normalize(_ value: Float) -> Float {

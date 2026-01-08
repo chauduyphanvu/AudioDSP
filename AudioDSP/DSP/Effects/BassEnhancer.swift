@@ -112,11 +112,11 @@ final class BassEnhancer: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         switch index {
-        case 0: amount = min(max(value / 100, 0), 1)
+        case 0: amount = (value / 100).clamped(to: 0...1)
         case 1:
-            lowFreq = min(max(value, 60), 150)
+            lowFreq = value.clamped(to: 60...150)
             updateFilter()
-        case 2: harmonics = min(max(value / 100, 0), 1)
+        case 2: harmonics = (value / 100).clamped(to: 0...1)
         default: break
         }
     }

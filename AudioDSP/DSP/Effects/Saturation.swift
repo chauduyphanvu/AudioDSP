@@ -67,15 +67,15 @@ final class Saturation: @unchecked Sendable {
     }
 
     func setDrive(_ newDrive: Float) {
-        params.modify { $0.drive = max(0, min(24, newDrive)) }
+        params.modify { $0.drive = newDrive.clamped(to: 0...24) }
     }
 
     func setMix(_ newMix: Float) {
-        params.modify { $0.mix = max(0, min(1, newMix)) }
+        params.modify { $0.mix = newMix.clamped(to: 0...1) }
     }
 
     func setOutputGain(_ newGain: Float) {
-        params.modify { $0.outputGain = max(-24, min(24, newGain)) }
+        params.modify { $0.outputGain = newGain.clamped(to: -24...24) }
     }
 
     func getMode() -> SaturationMode { params.read().mode }

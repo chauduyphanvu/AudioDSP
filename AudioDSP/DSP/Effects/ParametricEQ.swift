@@ -516,17 +516,17 @@ final class ParametricEQ: Effect, @unchecked Sendable {
 
         switch paramType {
         case 0:
-            freq = min(max(value, 20), 20000)
+            freq = value.clamped(to: 20...20000)
             gain = band.gainDb
             q = band.q
         case 1:
             freq = band.frequency
-            gain = min(max(value, -24), 24)
+            gain = value.clamped(to: -24...24)
             q = band.q
         case 2:
             freq = band.frequency
             gain = band.gainDb
-            q = min(max(value, 0.1), 10)
+            q = value.clamped(to: 0.1...10)
         default:
             return
         }

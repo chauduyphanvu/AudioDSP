@@ -12,7 +12,7 @@ final class Compressor: Effect, @unchecked Sendable {
     private var gainEnvelopeDb: Float = 0
     private var attackCoeff: Float = 0
     private var releaseCoeff: Float = 0
-    private var sampleRate: Float
+    private let sampleRate: Float
 
     var isBypassed: Bool = false
     var wetDry: Float = 1.0
@@ -24,20 +24,15 @@ final class Compressor: Effect, @unchecked Sendable {
 
     init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
-        updateCoefficients(attackMs: 10, releaseMs: 100)
-    }
-
-    private func updateCoefficients(attackMs: Float, releaseMs: Float) {
-        // Time constant: coeff = exp(-1 / (time_ms * 0.001 * sampleRate))
-        attackCoeff = attackMs > 0 ? expf(-1.0 / (attackMs * 0.001 * sampleRate)) : 0
-        releaseCoeff = releaseMs > 0 ? expf(-1.0 / (releaseMs * 0.001 * sampleRate)) : 0
+        self.attackCoeff = timeToCoefficient(10, sampleRate: sampleRate)
+        self.releaseCoeff = timeToCoefficient(100, sampleRate: sampleRate)
     }
 
     private var attackMs: Float = 10 {
-        didSet { updateCoefficients(attackMs: attackMs, releaseMs: releaseMs) }
+        didSet { attackCoeff = timeToCoefficient(attackMs, sampleRate: sampleRate) }
     }
     private var releaseMs: Float = 100 {
-        didSet { updateCoefficients(attackMs: attackMs, releaseMs: releaseMs) }
+        didSet { releaseCoeff = timeToCoefficient(releaseMs, sampleRate: sampleRate) }
     }
 
     /// Compute gain reduction in dB using smooth soft knee
@@ -78,11 +73,7 @@ final class Compressor: Effect, @unchecked Sendable {
         // Use attack when gain needs to decrease (more compression), release when increasing
         let coeff = targetReductionDb < gainEnvelopeDb ? attackCoeff : releaseCoeff
         gainEnvelopeDb = coeff * gainEnvelopeDb + (1.0 - coeff) * targetReductionDb
-
-        // Flush denormals
-        if abs(gainEnvelopeDb) < 1e-15 {
-            gainEnvelopeDb = 0
-        }
+        gainEnvelopeDb = flushDenormals(gainEnvelopeDb)
 
         gainReductionDb = gainEnvelopeDb
 
@@ -123,12 +114,12 @@ final class Compressor: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         switch index {
-        case 0: thresholdDb = min(max(value, -60), 0)
-        case 1: ratio = min(max(value, 1), 20)
-        case 2: attackMs = min(max(value, 0.1), 100)
-        case 3: releaseMs = min(max(value, 10), 1000)
-        case 4: makeupGainDb = min(max(value, 0), 24)
-        case 5: kneeDb = min(max(value, 0), 24)
+        case 0: thresholdDb = value.clamped(to: -60...0)
+        case 1: ratio = value.clamped(to: 1...20)
+        case 2: attackMs = value.clamped(to: 0.1...100)
+        case 3: releaseMs = value.clamped(to: 10...1000)
+        case 4: makeupGainDb = value.clamped(to: 0...24)
+        case 5: kneeDb = value.clamped(to: 0...24)
         default: break
         }
     }

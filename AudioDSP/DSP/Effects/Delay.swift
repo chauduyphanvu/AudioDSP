@@ -2,10 +2,7 @@ import Foundation
 
 /// Stereo delay with feedback and ping-pong mode
 final class Delay: Effect, @unchecked Sendable {
-    private var bufferLeft: [Float]
-    private var bufferRight: [Float]
-    private var writeIndex: Int = 0
-    private let maxDelaySamples: Int
+    private let delayLine: StereoDelayLine
 
     private var delayMs: Float = 250
     private var feedback: Float = 0.3
@@ -17,53 +14,40 @@ final class Delay: Effect, @unchecked Sendable {
 
     let name = "Delay"
 
+    private static let maxDelayMs: Float = 2000
+
     init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
-
-        // Max 2 seconds of delay
-        let maxDelayMs: Float = 2000
-        maxDelaySamples = Int(sampleRate * maxDelayMs / 1000)
-
-        bufferLeft = [Float](repeating: 0, count: maxDelaySamples)
-        bufferRight = [Float](repeating: 0, count: maxDelaySamples)
+        self.delayLine = StereoDelayLine(maxDelayMs: Self.maxDelayMs, sampleRate: sampleRate)
     }
 
     private var delaySamples: Int {
-        min(Int(sampleRate * delayMs / 1000), maxDelaySamples - 1)
+        Int(sampleRate * delayMs / 1000).clamped(to: 0...(delayLine.maxSamples - 1))
     }
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        let samples = delaySamples
-        let readIndex = (writeIndex + maxDelaySamples - samples) % maxDelaySamples
-
-        let delayedLeft = bufferLeft[readIndex]
-        let delayedRight = bufferRight[readIndex]
+        let (delayedLeft, delayedRight) = delayLine.read(delaySamples: delaySamples)
 
         let newLeft: Float
         let newRight: Float
 
         if pingPong {
-            // Ping-pong: left feeds right delay, right feeds left delay
             newLeft = left + delayedRight * feedback
             newRight = right + delayedLeft * feedback
         } else {
-            // Standard stereo delay
             newLeft = left + delayedLeft * feedback
             newRight = right + delayedRight * feedback
         }
 
-        bufferLeft[writeIndex] = newLeft
-        bufferRight[writeIndex] = newRight
-        writeIndex = (writeIndex + 1) % maxDelaySamples
+        delayLine.write(left: newLeft, right: newRight)
+        delayLine.advance()
 
         return (delayedLeft, delayedRight)
     }
 
     func reset() {
-        bufferLeft = [Float](repeating: 0, count: maxDelaySamples)
-        bufferRight = [Float](repeating: 0, count: maxDelaySamples)
-        writeIndex = 0
+        delayLine.reset()
     }
 
     var parameters: [ParameterDescriptor] {
@@ -83,8 +67,8 @@ final class Delay: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         switch index {
-        case 0: delayMs = min(max(value, 1), 2000)
-        case 1: feedback = min(max(value, 0), 0.95)
+        case 0: delayMs = value.clamped(to: 1...Self.maxDelayMs)
+        case 1: feedback = value.clamped(to: 0...0.95)
         default: break
         }
     }

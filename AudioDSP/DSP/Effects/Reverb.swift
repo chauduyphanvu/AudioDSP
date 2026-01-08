@@ -184,12 +184,9 @@ final class Reverb: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         switch index {
-        case 0:
-            roomSize = min(max(value, 0), 1)
-        case 1:
-            damping = min(max(value, 0), 1)
-        case 2:
-            width = min(max(value, 0), 1)
+        case 0: roomSize = value.clamped(to: 0...1)
+        case 1: damping = value.clamped(to: 0...1)
+        case 2: width = value.clamped(to: 0...1)
         default: break
         }
     }

@@ -26,14 +26,15 @@ final class DSPChain: @unchecked Sendable {
     private let configLock = os_unfair_lock_s()
     private var configLockPointer: UnsafeMutablePointer<os_unfair_lock_s>
 
+    private static let meterAttackMs: Float = 1.0
+    private static let meterReleaseMs: Float = 300.0
+
     init(sampleRate: UInt32 = 48000) {
         self.sampleRate = sampleRate
 
-        // Calculate meter envelope coefficients
-        // attack = exp(-1 / (attackMs * 0.001 * sampleRate))
         let sr = Float(sampleRate)
-        meterAttackCoeff = expf(-1.0 / (1.0 * 0.001 * sr))      // 1ms attack
-        meterReleaseCoeff = expf(-1.0 / (300.0 * 0.001 * sr))   // 300ms release
+        meterAttackCoeff = timeToCoefficient(Self.meterAttackMs, sampleRate: sr)
+        meterReleaseCoeff = timeToCoefficient(Self.meterReleaseMs, sampleRate: sr)
 
         // Initialize lock-free snapshot
         effectsSnapshot = UnsafeMutablePointer<[any Effect]>.allocate(capacity: 1)
@@ -83,8 +84,7 @@ final class DSPChain: @unchecked Sendable {
     private func updateMeter(current: Float, target: Float) -> Float {
         let coeff = target > current ? meterAttackCoeff : meterReleaseCoeff
         let result = coeff * current + (1.0 - coeff) * target
-        // Flush denormals
-        return result < 1e-10 ? 0 : result
+        return flushDenormals(result, threshold: 1e-10)
     }
 
     /// Process a stereo sample pair through the entire chain

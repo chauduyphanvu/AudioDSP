@@ -300,9 +300,8 @@ final class StateVariableFilter: @unchecked Sendable {
         ic1eq = 2 * v1 - ic1eq
         ic2eq = 2 * v2 - ic2eq
 
-        // Flush denormals
-        if abs(ic1eq) < 1e-15 { ic1eq = 0 }
-        if abs(ic2eq) < 1e-15 { ic2eq = 0 }
+        ic1eq = flushDenormals(ic1eq)
+        ic2eq = flushDenormals(ic2eq)
 
         // Mix outputs based on mode
         // v1 = bandpass, v2 = lowpass
@@ -333,21 +332,8 @@ final class StateVariableFilter: @unchecked Sendable {
 
     /// Calculate magnitude response at a given frequency
     func magnitudeAt(frequency: Float) -> Float {
-        let omega = 2.0 * Float.pi * frequency / sampleRate
-
-        // For SVF, we need to calculate the transfer function based on mode
-        // This is an approximation using the equivalent biquad response
-
-        let cosOmega = cos(omega)
-        let sinOmega = sin(omega)
-
-        // Convert SVF to equivalent z-domain response
-        // This depends on the current mode and coefficients
-
-        let gFreq = tan(Float.pi * currentFreq / sampleRate)
+        // Approximate SVF frequency response using analog prototype
         let kVal = 1.0 / max(currentQ, 0.01)
-
-        // Normalized frequency ratio
         let freqRatio = frequency / max(currentFreq, 1.0)
 
         switch currentMode {
@@ -397,11 +383,10 @@ final class StateVariableFilter: @unchecked Sendable {
             }
             // Transition region
             let logRatio = log(freqRatio) / log(2.0)
-            let blend = (logRatio + 1) / 2  // -1 to 1 -> 0 to 1
-            let clampedBlend = max(0, min(1, blend))
+            let blend = ((logRatio + 1) / 2).clamped(to: 0...1)
             return currentMode == .lowShelf
-                ? A * (1 - clampedBlend) + 1.0 * clampedBlend
-                : 1.0 * (1 - clampedBlend) + A * clampedBlend
+                ? A * (1 - blend) + blend
+                : (1 - blend) + A * blend
 
         case .allpass:
             return 1.0

@@ -44,7 +44,7 @@ final class Gain: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         if index == 0 {
-            setGainDb(min(max(value, -24), 24))
+            setGainDb(value.clamped(to: -24...24))
         }
     }
 }

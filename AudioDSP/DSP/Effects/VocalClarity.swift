@@ -107,10 +107,10 @@ final class VocalClarity: Effect, @unchecked Sendable {
     func setParameter(_ index: Int, value: Float) {
         switch index {
         case 0:
-            clarity = min(max(value / 100, 0), 1)
+            clarity = (value / 100).clamped(to: 0...1)
             updateFilters()
         case 1:
-            air = min(max(value / 100, 0), 1)
+            air = (value / 100).clamped(to: 0...1)
             updateFilters()
         default: break
         }

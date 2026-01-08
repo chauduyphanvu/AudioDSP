@@ -45,7 +45,7 @@ final class StereoWidener: Effect, @unchecked Sendable {
 
     func setParameter(_ index: Int, value: Float) {
         if index == 0 {
-            width = min(max(value, 0), 2)
+            width = value.clamped(to: 0...2)
         }
     }
 }

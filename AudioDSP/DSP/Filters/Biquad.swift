@@ -369,11 +369,8 @@ final class Biquad: @unchecked Sendable {
         z1 = currentCoeffs.b1 * input - currentCoeffs.a1 * output + z2
         z2 = currentCoeffs.b2 * input - currentCoeffs.a2 * output
 
-        // Flush denormals using threshold check as safety net
-        // ARM64 (Apple Silicon) has FTZ enabled by default
-        // These checks provide additional protection and are very low cost
-        if abs(z1) < 1e-15 { z1 = 0 }
-        if abs(z2) < 1e-15 { z2 = 0 }
+        z1 = flushDenormals(z1)
+        z2 = flushDenormals(z2)
 
         return output
     }
