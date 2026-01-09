@@ -16,6 +16,12 @@ struct ExtendedBandState: Sendable, Equatable {
     var proportionalQStrength: Float = ProportionalQ.defaultStrength
 }
 
+/// Cascaded filter pair for thread-safe atomic swapping
+struct CascadedFilterPair: Sendable {
+    let left: CascadedFilter
+    let right: CascadedFilter
+}
+
 /// Extended EQ band with stereo processing, multiple filter topologies,
 /// variable slopes, M/S processing, and dynamic EQ capabilities.
 final class ExtendedEQBand: @unchecked Sendable {
@@ -25,19 +31,18 @@ final class ExtendedEQBand: @unchecked Sendable {
     private var biquadRight: Biquad
     private var svfLeft: StateVariableFilter
     private var svfRight: StateVariableFilter
-    private var cascadedLeft: CascadedFilter?
-    private var cascadedRight: CascadedFilter?
+    private let cascadedFilters: ThreadSafeValue<CascadedFilterPair?>
 
     // MARK: - Thread-Safe State
 
     private let state: ThreadSafeValue<ExtendedBandState>
     private let enabledFlag: AtomicBool
+    private let resetFlag: AtomicFlag
     private let sampleRate: Float
 
     // MARK: - Dynamic EQ State (audio thread only)
 
-    private var envelopeL: Float = 0
-    private var envelopeR: Float = 0
+    private var envelope: Float = 0
     private var sidechainFilter: Biquad
 
     // MARK: - Public Accessors
@@ -60,6 +65,8 @@ final class ExtendedEQBand: @unchecked Sendable {
         let initialParams = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q)
         self.state = ThreadSafeValue(ExtendedBandState(params: initialParams))
         self.enabledFlag = AtomicBool(true)
+        self.resetFlag = AtomicFlag()
+        self.cascadedFilters = ThreadSafeValue(nil)
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
@@ -89,6 +96,11 @@ final class ExtendedEQBand: @unchecked Sendable {
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
         guard enabledFlag.value else { return (left, right) }
 
+        // Handle reset request from UI thread at safe point (start of processing)
+        if resetFlag.testAndClear() {
+            performReset()
+        }
+
         let currentState = state.read()
         let currentTopology = currentState.topology
         let currentSlope = currentState.slope
@@ -99,6 +111,9 @@ final class ExtendedEQBand: @unchecked Sendable {
         let dynRatio = currentState.dynamicsRatio
         let attackCoeff = currentState.dynamicsAttackCoeff
         let releaseCoeff = currentState.dynamicsReleaseCoeff
+
+        // Read cascaded filters atomically
+        let cascaded = cascadedFilters.read()
 
         var l = left
         var r = right
@@ -121,10 +136,10 @@ final class ExtendedEQBand: @unchecked Sendable {
             right: r,
             mode: currentMsMode,
             processL: { sample in
-                self.processFilterSample(sample, isLeft: true, topology: currentTopology, slope: currentSlope, bandType: currentBandType)
+                self.processFilterSample(sample, isLeft: true, topology: currentTopology, slope: currentSlope, bandType: currentBandType, cascaded: cascaded)
             },
             processR: { sample in
-                self.processFilterSample(sample, isLeft: false, topology: currentTopology, slope: currentSlope, bandType: currentBandType)
+                self.processFilterSample(sample, isLeft: false, topology: currentTopology, slope: currentSlope, bandType: currentBandType, cascaded: cascaded)
             }
         )
 
@@ -144,16 +159,15 @@ final class ExtendedEQBand: @unchecked Sendable {
         let sidechainFiltered = sidechainFilter.process(sidechainMono)
         let sidechainLevel = abs(sidechainFiltered)
 
-        // Envelope follower
-        if sidechainLevel > envelopeL {
-            envelopeL = envelopeL + attackCoeff * (sidechainLevel - envelopeL)
+        // Envelope follower (stereo-linked)
+        if sidechainLevel > envelope {
+            envelope = envelope + attackCoeff * (sidechainLevel - envelope)
         } else {
-            envelopeL = envelopeL + releaseCoeff * (sidechainLevel - envelopeL)
+            envelope = envelope + releaseCoeff * (sidechainLevel - envelope)
         }
-        envelopeR = envelopeL  // Linked stereo
 
         // Calculate gain reduction
-        let envDb = linearToDb(envelopeL + 1e-10)
+        let envDb = linearToDb(envelope + 1e-10)
         if envDb > threshold {
             let overThreshold = envDb - threshold
             let gainReduction = overThreshold * (1 - 1 / ratio)
@@ -165,14 +179,13 @@ final class ExtendedEQBand: @unchecked Sendable {
     }
 
     @inline(__always)
-    private func processFilterSample(_ sample: Float, isLeft: Bool, topology: FilterTopology, slope: FilterSlope, bandType: BandType) -> Float {
+    private func processFilterSample(_ sample: Float, isLeft: Bool, topology: FilterTopology, slope: FilterSlope, bandType: BandType, cascaded: CascadedFilterPair?) -> Float {
         // For LP/HP with non-standard slopes, use cascaded filter
         if FilterSlope.appliesTo(bandType) && slope != .slope12dB {
-            if isLeft {
-                return cascadedLeft?.process(sample) ?? sample
-            } else {
-                return cascadedRight?.process(sample) ?? sample
+            if let filters = cascaded {
+                return isLeft ? filters.left.process(sample) : filters.right.process(sample)
             }
+            return sample
         }
 
         // Standard processing with selected topology
@@ -215,9 +228,12 @@ final class ExtendedEQBand: @unchecked Sendable {
         biquadRight.updateParameters(biquadParams)
         updateSVFParams(effectiveQ: effectiveQ)
 
+        // Update cascaded filters if they exist
         if FilterSlope.appliesTo(bandType) {
-            cascadedLeft?.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
-            cascadedRight?.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
+            cascadedFilters.modify { pair in
+                pair?.left.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
+                pair?.right.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
+            }
         }
 
         sidechainFilter.updateParameters(BiquadParams(
@@ -235,18 +251,24 @@ final class ExtendedEQBand: @unchecked Sendable {
         }
 
         if FilterSlope.appliesTo(currentParams.bandType) {
-            cascadedLeft = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
-            cascadedRight = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
-            cascadedLeft?.updateParameters(
+            // Create new filters, configure them, then atomically swap
+            let newLeft = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
+            let newRight = CascadedFilter(slope: newSlope, sampleRate: sampleRate)
+            newLeft.updateParameters(
                 frequency: currentParams.frequency,
                 q: currentParams.q,
                 isHighPass: currentParams.bandType == .highPass
             )
-            cascadedRight?.updateParameters(
+            newRight.updateParameters(
                 frequency: currentParams.frequency,
                 q: currentParams.q,
                 isHighPass: currentParams.bandType == .highPass
             )
+            // Atomic swap - audio thread will pick up new filters on next read
+            cascadedFilters.write(CascadedFilterPair(left: newLeft, right: newRight))
+        } else {
+            // Clear cascaded filters if not applicable
+            cascadedFilters.write(nil)
         }
     }
 
@@ -283,22 +305,31 @@ final class ExtendedEQBand: @unchecked Sendable {
     func setEnabled(_ enabled: Bool) {
         enabledFlag.value = enabled
         if enabled {
-            reset()
+            // Signal reset to be performed on audio thread at safe point
+            resetFlag.set()
         }
     }
 
     // MARK: - Reset
 
+    /// Request a reset to be performed on the audio thread.
+    /// This is thread-safe and can be called from any thread.
     func reset() {
+        resetFlag.set()
+    }
+
+    /// Perform the actual reset. Called from audio thread only.
+    private func performReset() {
         biquadLeft.reset()
         biquadRight.reset()
         svfLeft.reset()
         svfRight.reset()
-        cascadedLeft?.reset()
-        cascadedRight?.reset()
+        if let filters = cascadedFilters.read() {
+            filters.left.reset()
+            filters.right.reset()
+        }
         sidechainFilter.reset()
-        envelopeL = 0
-        envelopeR = 0
+        envelope = 0
     }
 
     /// Configure proportional Q for analog-style EQ behavior.
