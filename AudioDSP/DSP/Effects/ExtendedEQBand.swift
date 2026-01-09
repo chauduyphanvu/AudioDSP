@@ -12,6 +12,8 @@ struct ExtendedBandState: Sendable, Equatable {
     var dynamicsRatio: Float = 2.0
     var dynamicsAttackCoeff: Float = 0.01
     var dynamicsReleaseCoeff: Float = 0.001
+    var proportionalQEnabled: Bool = false
+    var proportionalQStrength: Float = ProportionalQ.defaultStrength
 }
 
 /// Extended EQ band with stereo processing, multiple filter topologies,
@@ -192,24 +194,30 @@ final class ExtendedEQBand: @unchecked Sendable {
     /// acceptable for audio DSP where brief transients during parameter changes are tolerable.
     /// The underlying Biquad/SVF filters handle their own parameter smoothing to prevent clicks.
     func update(bandType: BandType, frequency: Float, gainDb: Float, q: Float) {
-        state.modify { s in
+        let proportionalQSettings: (enabled: Bool, strength: Float) = state.modifyAndReturn { s in
             s.params = EQBandParams(bandType: bandType, frequency: frequency, gainDb: gainDb, q: q, solo: s.params.solo)
+            return (s.proportionalQEnabled, s.proportionalQStrength)
         }
+
+        // Apply proportional Q for analog-style behavior
+        let effectiveQ = proportionalQSettings.enabled
+            ? ProportionalQ.calculate(baseQ: q, gainDb: gainDb, strength: proportionalQSettings.strength, bandType: bandType)
+            : q
 
         let biquadParams = BiquadParams(
             filterType: bandType.toBiquadType(gainDb: gainDb),
             frequency: frequency,
-            q: q,
+            q: effectiveQ,
             gainDb: gainDb
         )
 
         biquadLeft.updateParameters(biquadParams)
         biquadRight.updateParameters(biquadParams)
-        updateSVFParams()
+        updateSVFParams(effectiveQ: effectiveQ)
 
         if FilterSlope.appliesTo(bandType) {
-            cascadedLeft?.updateParameters(frequency: frequency, q: q, isHighPass: bandType == .highPass)
-            cascadedRight?.updateParameters(frequency: frequency, q: q, isHighPass: bandType == .highPass)
+            cascadedLeft?.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
+            cascadedRight?.updateParameters(frequency: frequency, q: effectiveQ, isHighPass: bandType == .highPass)
         }
 
         sidechainFilter.updateParameters(BiquadParams(
@@ -293,11 +301,51 @@ final class ExtendedEQBand: @unchecked Sendable {
         envelopeR = 0
     }
 
+    /// Configure proportional Q for analog-style EQ behavior.
+    ///
+    /// - Parameters:
+    ///   - enabled: Whether to enable proportional Q
+    ///   - strength: How much gain affects Q (0.08 = subtle, 0.15 = aggressive)
+    func setProportionalQ(enabled: Bool, strength: Float = ProportionalQ.defaultStrength) {
+        let currentParams: EQBandParams = state.modifyAndReturn { s in
+            s.proportionalQEnabled = enabled
+            s.proportionalQStrength = max(0, min(0.3, strength))
+            return s.params
+        }
+
+        // Re-apply current parameters with new proportional Q setting
+        update(
+            bandType: currentParams.bandType,
+            frequency: currentParams.frequency,
+            gainDb: currentParams.gainDb,
+            q: currentParams.q
+        )
+    }
+
+    var proportionalQEnabled: Bool { state.read().proportionalQEnabled }
+    var proportionalQStrength: Float { state.read().proportionalQStrength }
+
     // MARK: - Private Helpers
 
-    private func updateSVFParams() {
+    private func updateSVFParams(effectiveQ: Float? = nil) {
         let currentState = state.read()
         let params = currentState.params
+
+        // Use provided effectiveQ or calculate if proportional Q is enabled
+        let qToUse: Float
+        if let effective = effectiveQ {
+            qToUse = effective
+        } else if currentState.proportionalQEnabled {
+            qToUse = ProportionalQ.calculate(
+                baseQ: params.q,
+                gainDb: params.gainDb,
+                strength: currentState.proportionalQStrength,
+                bandType: params.bandType
+            )
+        } else {
+            qToUse = params.q
+        }
+
         let svfMode: SVFMode
         switch params.bandType {
         case .lowShelf: svfMode = .lowShelf
@@ -306,7 +354,7 @@ final class ExtendedEQBand: @unchecked Sendable {
         case .lowPass: svfMode = .lowpass
         case .highPass: svfMode = .highpass
         }
-        svfLeft.setParameters(mode: svfMode, frequency: params.frequency, q: params.q, gainDb: params.gainDb)
-        svfRight.setParameters(mode: svfMode, frequency: params.frequency, q: params.q, gainDb: params.gainDb)
+        svfLeft.setParameters(mode: svfMode, frequency: params.frequency, q: qToUse, gainDb: params.gainDb)
+        svfRight.setParameters(mode: svfMode, frequency: params.frequency, q: qToUse, gainDb: params.gainDb)
     }
 }
