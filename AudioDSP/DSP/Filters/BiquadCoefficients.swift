@@ -99,27 +99,26 @@ struct BiquadCoefficients: Sendable {
 
         case .lowPass1Pole:
             // Simple 1-pole lowpass (6dB/oct)
-            // Using bilinear transform of analog RC filter
-            let wc = 2.0 * Float.pi * actualFreq
-            let T = 1.0 / sampleRate
-            let alpha1p = wc * T / (2.0 + wc * T)
-            b0 = alpha1p
-            b1 = alpha1p
+            // Bilinear transform of H(s) = ωc/(s + ωc)
+            // Note: omega = ωc*T where T = 1/sampleRate (reusing pre-warped omega from above)
+            let denom1p = 2.0 + omega
+            b0 = omega / denom1p
+            b1 = omega / denom1p
             b2 = 0
             a0 = 1.0
-            a1 = alpha1p - 1.0
+            a1 = (omega - 2.0) / denom1p
             a2 = 0
 
         case .highPass1Pole:
             // Simple 1-pole highpass (6dB/oct)
-            let wc = 2.0 * Float.pi * actualFreq
-            let T = 1.0 / sampleRate
-            let alpha1p = 1.0 / (1.0 + wc * T / 2.0)
-            b0 = alpha1p
-            b1 = -alpha1p
+            // Bilinear transform of H(s) = s/(s + ωc)
+            // Note: omega = ωc*T where T = 1/sampleRate (reusing pre-warped omega from above)
+            let denom1p = 2.0 + omega
+            b0 = 2.0 / denom1p
+            b1 = -2.0 / denom1p
             b2 = 0
             a0 = 1.0
-            a1 = alpha1p - 1.0
+            a1 = (omega - 2.0) / denom1p
             a2 = 0
         }
 
