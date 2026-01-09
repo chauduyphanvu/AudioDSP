@@ -40,7 +40,7 @@ final class AudioEngine: ObservableObject {
 
     // MARK: - Configuration
 
-    let sampleRate: Double = 48000
+    let sampleRate: Double = 44100
     let channels: Int = 2
 
     // MARK: - Private State
@@ -208,10 +208,11 @@ final class AudioEngine: ObservableObject {
             throw AudioEngineError.invalidState("Audio units not initialized")
         }
 
+        // Use interleaved 32-bit float format
         var streamFormat = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
             mBytesPerPacket: UInt32(channels * MemoryLayout<Float>.size),
             mFramesPerPacket: 1,
             mBytesPerFrame: UInt32(channels * MemoryLayout<Float>.size),

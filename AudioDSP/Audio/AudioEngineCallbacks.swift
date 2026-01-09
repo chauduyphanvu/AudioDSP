@@ -18,25 +18,24 @@ func audioEngineInputCallback(
 ) -> OSStatus {
     let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
 
-    // Use pre-allocated buffer instead of allocating on audio thread
-    // Clamp to buffer capacity to prevent overflow (pre-allocated for 4096 frames * 2 channels)
     let maxFrames = 4096
     let frameCount = min(Int(inNumberFrames), maxFrames)
     let data = engine.inputBuffer
 
-    // Set up buffer list pointing to pre-allocated memory
+    // Set up buffer list for interleaved stereo
     var bufferList = AudioBufferList(
         mNumberBuffers: 1,
         mBuffers: AudioBuffer(
             mNumberChannels: 2,
-            mDataByteSize: UInt32(frameCount) * 2 * UInt32(MemoryLayout<Float>.size),
+            mDataByteSize: UInt32(frameCount * 2 * MemoryLayout<Float>.size),
             mData: UnsafeMutableRawPointer(data)
         )
     )
 
-    // Render input audio into pre-allocated buffer
+    // Render input audio into buffer
+    // IMPORTANT: Use frameCount (clamped) not inNumberFrames to match buffer size
     guard let inputUnit = engine.inputUnit else { return noErr }
-    let status = AudioUnitRender(inputUnit, ioActionFlags, inTimeStamp, 1, inNumberFrames, &bufferList)
+    let status = AudioUnitRender(inputUnit, ioActionFlags, inTimeStamp, 1, UInt32(frameCount), &bufferList)
     guard status == noErr else { return status }
 
     // Push interleaved stereo samples to ring buffer
@@ -59,11 +58,6 @@ func audioEngineOutputCallback(
     inNumberFrames: UInt32,
     ioData: UnsafeMutablePointer<AudioBufferList>?
 ) -> OSStatus {
-    // Note: Denormal handling
-    // - ARM64 (Apple Silicon): FTZ is enabled by default for performance
-    // - x86_64 (Intel): Per-sample threshold checks in Biquad.swift handle denormals
-    // - Additional protection: Filter state variables are flushed when below 1e-15
-
     let engine = Unmanaged<AudioEngine>.fromOpaque(inRefCon).takeUnretainedValue()
 
     guard let ioData = ioData else { return noErr }
@@ -75,19 +69,27 @@ func audioEngineOutputCallback(
 
     let frameCount = Int(inNumberFrames)
 
+    // Write interleaved stereo output
+    // DEBUG: Set to true to bypass DSP and test raw audio passthrough
+    let bypassDSP = false
+
     for frame in 0..<frameCount {
-        // Pull from ring buffer (with graceful underrun handling)
         let (left, right) = engine.ringBuffer.pop()
 
-        // Process through DSP chain (lock-free)
-        let (procL, procR) = engine.dspChain.process(left: left, right: right)
+        let outL: Float
+        let outR: Float
+        if bypassDSP {
+            outL = left
+            outR = right
+        } else {
+            let (procL, procR) = engine.dspChain.process(left: left, right: right)
+            outL = procL
+            outR = procR
+        }
 
-        // Write interleaved output
-        outData[frame * 2] = procL
-        outData[frame * 2 + 1] = procR
-
-        // Feed analyzer
-        engine.fftAnalyzer.push(left: procL, right: procR)
+        outData[frame * 2] = outL
+        outData[frame * 2 + 1] = outR
+        engine.fftAnalyzer.push(left: outL, right: outR)
     }
 
     return noErr

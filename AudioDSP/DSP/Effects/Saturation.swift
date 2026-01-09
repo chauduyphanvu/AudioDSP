@@ -1,36 +1,10 @@
 import Foundation
 
-/// Saturation modes with different harmonic characters
-enum SaturationMode: Int, Codable, CaseIterable, Sendable {
-    case clean = 0      // Transparent tanh limiting
-    case tube = 1       // Asymmetric soft clip, even harmonics
-    case tape = 2       // Polynomial saturation with subtle compression
-    case transistor = 3 // Harder clipping, odd harmonics
-
-    var displayName: String {
-        switch self {
-        case .clean: return "Clean"
-        case .tube: return "Tube"
-        case .tape: return "Tape"
-        case .transistor: return "Transistor"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .clean: return "Transparent limiting"
-        case .tube: return "Warm, even harmonics"
-        case .tape: return "Gentle compression"
-        case .transistor: return "Punchy, odd harmonics"
-        }
-    }
-}
-
 /// Thread-safe saturation processor with multiple analog-modeled modes.
 /// Uses 2x oversampling to prevent harmonic aliasing from nonlinearities.
 final class Saturation: @unchecked Sendable {
     /// Bundled parameter state for atomic access
-    private struct Params {
+    private struct Params: Sendable {
         var mode: SaturationMode = .clean
         var drive: Float = 0.0
         var mix: Float = 1.0
@@ -81,106 +55,6 @@ final class Saturation: @unchecked Sendable {
     func getMode() -> SaturationMode { params.read().mode }
     func getDrive() -> Float { params.read().drive }
 
-    // MARK: - Saturation Algorithms
-
-    /// Clean saturation - transparent tanh limiting (current implementation)
-    @inline(__always)
-    private func cleanSaturate(_ x: Float) -> Float {
-        let threshold = softClipThreshold
-        let absSample = abs(x)
-
-        if absSample <= threshold {
-            return x
-        }
-
-        let sign: Float = x >= 0 ? 1 : -1
-        let excess = absSample - threshold
-        let knee = softClipKnee
-        let compressed = threshold + knee * tanh(excess / knee)
-        return sign * min(compressed, 1.0)
-    }
-
-    /// Tube saturation - asymmetric soft clipping emphasizing even harmonics
-    /// Positive and negative half-cycles are processed differently for asymmetry
-    @inline(__always)
-    private func tubeSaturate(_ x: Float, driveAmount: Float) -> Float {
-        // Drive maps 0-24dB to 0-1 normalized drive
-        let normalizedDrive = driveAmount / 24.0
-        let k = 2.0 * normalizedDrive / max(1.0 - normalizedDrive, 0.01)
-
-        // Asymmetric transfer function - softer on negative, harder on positive
-        // This creates even harmonics characteristic of tube distortion
-        if x >= 0 {
-            let saturated = (1 + k) * x / (1 + k * abs(x))
-            return min(saturated, 1.0)
-        } else {
-            // Softer compression on negative half-cycle
-            let softerK = k * 0.7
-            let saturated = (1 + softerK) * x / (1 + softerK * abs(x))
-            return max(saturated, -1.0)
-        }
-    }
-
-    /// Tape saturation - polynomial soft saturation with subtle compression
-    /// Emulates magnetic tape's gentle limiting characteristics
-    @inline(__always)
-    private func tapeSaturate(_ x: Float, driveAmount: Float) -> Float {
-        // Apply drive as input gain
-        let driveLinear = powf(10.0, driveAmount / 20.0)
-        let driven = x * min(driveLinear, 4.0)  // Cap at +12dB effective
-
-        // Soft polynomial saturation: y = x - x^3/3 (classic cubic soft clipper)
-        // This provides smooth limiting with predominantly odd harmonics
-        let clipped = max(-1.5, min(1.5, driven))
-        var y = clipped - (clipped * clipped * clipped) / 3.0
-
-        // Normalize output to prevent level jump
-        y *= 0.75
-
-        return max(-1.0, min(1.0, y))
-    }
-
-    /// Transistor saturation - harder clipping with odd harmonics
-    /// Emulates solid-state distortion characteristics
-    @inline(__always)
-    private func transistorSaturate(_ x: Float, driveAmount: Float) -> Float {
-        // Apply drive as input gain
-        let driveLinear = powf(10.0, driveAmount / 20.0)
-        let driven = x * min(driveLinear, 4.0)
-
-        // Hard clip with cubic soft knee for smooth transition
-        let threshold: Float = 0.6
-        let absDriven = abs(driven)
-
-        if absDriven < threshold {
-            return driven
-        }
-
-        let sign: Float = driven >= 0 ? 1 : -1
-        let excess = absDriven - threshold
-
-        // Sharper saturation curve than tape
-        let headroom = 1.0 - threshold
-        let saturated = threshold + headroom * tanh(excess * 3.0 / headroom)
-
-        return sign * min(saturated, 1.0)
-    }
-
-    /// Apply saturation based on current mode
-    @inline(__always)
-    private func saturateCore(_ x: Float, currentMode: SaturationMode, driveAmount: Float) -> Float {
-        switch currentMode {
-        case .clean:
-            return cleanSaturate(x)
-        case .tube:
-            return tubeSaturate(x, driveAmount: driveAmount)
-        case .tape:
-            return tapeSaturate(x, driveAmount: driveAmount)
-        case .transistor:
-            return transistorSaturate(x, driveAmount: driveAmount)
-        }
-    }
-
     // MARK: - Processing
 
     /// Process stereo samples with 2x oversampled saturation
@@ -217,11 +91,23 @@ final class Saturation: @unchecked Sendable {
         let upR0 = (oversamplePrevR + right) * 0.5
         let upR1 = right
 
-        // Apply saturation at 2x rate
-        var clipL0 = saturateCore(upL0, currentMode: currentMode, driveAmount: currentDrive)
-        var clipL1 = saturateCore(upL1, currentMode: currentMode, driveAmount: currentDrive)
-        var clipR0 = saturateCore(upR0, currentMode: currentMode, driveAmount: currentDrive)
-        var clipR1 = saturateCore(upR1, currentMode: currentMode, driveAmount: currentDrive)
+        // Apply saturation at 2x rate using extracted waveshaping functions
+        var clipL0 = WaveshapingFunctions.saturate(
+            upL0, mode: currentMode, driveAmount: currentDrive,
+            threshold: softClipThreshold, knee: softClipKnee
+        )
+        var clipL1 = WaveshapingFunctions.saturate(
+            upL1, mode: currentMode, driveAmount: currentDrive,
+            threshold: softClipThreshold, knee: softClipKnee
+        )
+        var clipR0 = WaveshapingFunctions.saturate(
+            upR0, mode: currentMode, driveAmount: currentDrive,
+            threshold: softClipThreshold, knee: softClipKnee
+        )
+        var clipR1 = WaveshapingFunctions.saturate(
+            upR1, mode: currentMode, driveAmount: currentDrive,
+            threshold: softClipThreshold, knee: softClipKnee
+        )
 
         // Tape mode: apply subtle HF rolloff (one-pole lowpass on oversampled signal)
         if currentMode == .tape {

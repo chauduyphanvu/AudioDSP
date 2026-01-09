@@ -122,8 +122,6 @@ final class DSPChain: @unchecked Sendable {
             if !effect.isBypassed {
                 let wetDry = effect.wetDry
                 let (wetL, wetR) = effect.process(left: l, right: r)
-
-                // Apply wet/dry mix
                 l = l * (1.0 - wetDry) + wetL * wetDry
                 r = r * (1.0 - wetDry) + wetR * wetDry
             }

@@ -1,51 +1,6 @@
 import Foundation
 import os
 
-/// SVF filter modes
-enum SVFMode: Int, Codable, CaseIterable, Sendable {
-    case lowpass = 0
-    case highpass = 1
-    case bandpass = 2
-    case notch = 3
-    case peak = 4
-    case lowShelf = 5
-    case highShelf = 6
-    case allpass = 7
-
-    var displayName: String {
-        switch self {
-        case .lowpass: return "Low Pass"
-        case .highpass: return "High Pass"
-        case .bandpass: return "Band Pass"
-        case .notch: return "Notch"
-        case .peak: return "Peak"
-        case .lowShelf: return "Low Shelf"
-        case .highShelf: return "High Shelf"
-        case .allpass: return "All Pass"
-        }
-    }
-}
-
-/// Filter topology selection
-enum FilterTopology: Int, Codable, CaseIterable, Sendable {
-    case biquad = 0
-    case svf = 1
-
-    var displayName: String {
-        switch self {
-        case .biquad: return "Biquad"
-        case .svf: return "SVF"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .biquad: return "Classic biquad filter"
-        case .svf: return "State Variable Filter - better HF response"
-        }
-    }
-}
-
 /// Cytomic/Andrew Simper State Variable Filter implementation
 /// Superior high-frequency behavior and more stable modulation compared to biquads
 /// Reference: https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
@@ -55,8 +10,6 @@ final class StateVariableFilter: @unchecked Sendable {
     private var ic2eq: Float = 0  // Second integrator state
 
     // Coefficients
-    private var g: Float = 0      // Frequency coefficient (tan of half-angle)
-    private var k: Float = 0      // Damping (1/Q)
     private var a1: Float = 0
     private var a2: Float = 0
     private var a3: Float = 0
@@ -146,16 +99,27 @@ final class StateVariableFilter: @unchecked Sendable {
 
     /// Update SVF coefficients based on Cytomic formulas
     private func updateCoefficients(mode: SVFMode, frequency: Float, q: Float, gainDb: Float) {
-        // Clamp frequency to safe range
         let nyquist = sampleRate / 2.0
         let clampedFreq = min(max(frequency, 20), nyquist * 0.99)
 
         // Pre-warp frequency using tan for accurate response
-        // g = tan(pi * freq / sampleRate)
-        g = tan(Float.pi * clampedFreq / sampleRate)
+        var g = tan(Float.pi * clampedFreq / sampleRate)
 
         // k is the damping coefficient (1/Q)
-        k = 1.0 / max(q, 0.01)
+        let k = 1.0 / max(q, 0.01)
+
+        // Calculate A for peak/shelf modes
+        let A = powf(10.0, gainDb / 40.0)
+
+        // Adjust g for shelf modes before computing denominators
+        switch mode {
+        case .lowShelf:
+            g = g / sqrt(A)
+        case .highShelf:
+            g = g * sqrt(A)
+        default:
+            break
+        }
 
         // Common denominators
         a1 = 1.0 / (1.0 + g * (g + k))
@@ -163,8 +127,6 @@ final class StateVariableFilter: @unchecked Sendable {
         a3 = g * a2
 
         // Calculate mixing coefficients based on mode
-        let A = powf(10.0, gainDb / 40.0)  // For peak/shelf modes
-
         switch mode {
         case .lowpass:
             m0 = 0
@@ -187,48 +149,19 @@ final class StateVariableFilter: @unchecked Sendable {
             m2 = 0
 
         case .peak:
-            // Peak EQ: boost/cut at center frequency
-            // For boost: increase bandpass, for cut: decrease
-            let peakGain = A * A  // Squared for proper dB scaling
+            let peakGain = A * A
             m0 = 1
             m1 = k * (peakGain - 1)
             m2 = 0
 
         case .lowShelf:
-            // Low shelf using modified SVF approach
-            // Adjust g for shelf corner frequency
-            let gShelf = g / sqrt(A)
-            let kShelf = k
-
-            // Recalculate with shelf-adjusted g
-            let a1Shelf = 1.0 / (1.0 + gShelf * (gShelf + kShelf))
-            let a2Shelf = gShelf * a1Shelf
-
-            // Store for use in processing (we'll handle this specially)
-            a1 = a1Shelf
-            a2 = a2Shelf
-            a3 = gShelf * a2Shelf
-
-            // Shelf mixing coefficients
             m0 = 1
-            m1 = kShelf * (A - 1)
+            m1 = k * (A - 1)
             m2 = A * A - 1
 
         case .highShelf:
-            // High shelf using modified SVF approach
-            let gShelf = g * sqrt(A)
-            let kShelf = k
-
-            let a1Shelf = 1.0 / (1.0 + gShelf * (gShelf + kShelf))
-            let a2Shelf = gShelf * a1Shelf
-
-            a1 = a1Shelf
-            a2 = a2Shelf
-            a3 = gShelf * a2Shelf
-
-            // Shelf mixing coefficients
             m0 = A * A
-            m1 = kShelf * (1 - A) * A
+            m1 = k * (1 - A) * A
             m2 = 1 - A * A
 
         case .allpass:
@@ -289,9 +222,6 @@ final class StateVariableFilter: @unchecked Sendable {
         os_unfair_lock_unlock(&paramsLock)
 
         // SVF processing (Cytomic topology)
-        // v3 = input - ic2eq
-        // v1 = a1 * ic1eq + a2 * v3
-        // v2 = ic2eq + a2 * ic1eq + a3 * v3
         let v3 = input - ic2eq
         let v1 = localA1 * ic1eq + localA2 * v3
         let v2 = ic2eq + localA2 * ic1eq + localA3 * v3
@@ -304,8 +234,6 @@ final class StateVariableFilter: @unchecked Sendable {
         ic2eq = flushDenormals(ic2eq)
 
         // Mix outputs based on mode
-        // v1 = bandpass, v2 = lowpass
-        // highpass = input - k*v1 - v2
         let output = localM0 * input + localM1 * v1 + localM2 * v2
 
         return output
@@ -324,21 +252,24 @@ final class StateVariableFilter: @unchecked Sendable {
         os_unfair_lock_unlock(&paramsLock)
     }
 
+    /// Thread-safe check if parameter smoothing is in progress
     var isSmoothing: Bool {
-        smoothingCounter > 0
+        os_unfair_lock_lock(&paramsLock)
+        defer { os_unfair_lock_unlock(&paramsLock) }
+        return smoothingCounter > 0
     }
+}
 
-    // MARK: - Frequency Response
+// MARK: - Frequency Response
 
+extension StateVariableFilter {
     /// Calculate magnitude response at a given frequency
     func magnitudeAt(frequency: Float) -> Float {
-        // Approximate SVF frequency response using analog prototype
         let kVal = 1.0 / max(currentQ, 0.01)
         let freqRatio = frequency / max(currentFreq, 1.0)
 
         switch currentMode {
         case .lowpass:
-            // Second-order lowpass response
             let s2 = freqRatio * freqRatio
             let denom = sqrt((1 - s2) * (1 - s2) + (kVal * freqRatio) * (kVal * freqRatio))
             return 1.0 / max(denom, 1e-10)
@@ -367,7 +298,6 @@ final class StateVariableFilter: @unchecked Sendable {
 
         case .lowShelf, .highShelf:
             let A = powf(10.0, currentGainDb / 40.0)
-            // Simplified shelf response
             if currentMode == .lowShelf {
                 if frequency < currentFreq * 0.5 {
                     return A

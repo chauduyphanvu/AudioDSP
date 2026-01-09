@@ -11,9 +11,10 @@ final class Limiter: Effect, @unchecked Sendable {
     private let audioDelayLine: StereoDelayLine
     private let lookaheadSamples: Int
 
-    // Peak detection buffer
-    private var peakBuffer: [Float]
-    private var peakWriteIndex: Int = 0
+    // Peak envelope follower (replaces expensive buffer scanning)
+    private var peakEnvelope: Float = 0
+    private let peakAttackCoeff: Float   // Instant attack
+    private let peakReleaseCoeff: Float  // Release matched to lookahead time
 
     // Gain smoothing envelope
     private var currentGain: Float = 1.0
@@ -38,36 +39,38 @@ final class Limiter: Effect, @unchecked Sendable {
 
         lookaheadSamples = max(1, Int(sampleRate * Self.lookaheadMs / 1000))
         audioDelayLine = StereoDelayLine(maxSamples: lookaheadSamples)
-        peakBuffer = [Float](repeating: 0, count: lookaheadSamples)
 
         ceilingLinear = dbToLinear(-0.3)
+
+        // Peak detector: instant attack, release matches lookahead time
+        peakAttackCoeff = 0.0  // Instant attack
+        peakReleaseCoeff = timeToCoefficient(Self.lookaheadMs, sampleRate: sampleRate)
+
+        // Gain smoother
         attackCoeff = timeToCoefficient(Self.attackMs, sampleRate: sampleRate)
         releaseCoeff = timeToCoefficient(Self.releaseMs, sampleRate: sampleRate)
     }
 
     @inline(__always)
     func process(left: Float, right: Float) -> (left: Float, right: Float) {
-        // Get delayed audio (lookahead allows us to see peaks before they arrive)
         let (delayedLeft, delayedRight) = audioDelayLine.process(
             left: left,
             right: right,
             delaySamples: lookaheadSamples - 1
         )
 
-        // Store peak level in peak buffer for lookahead scanning
+        // Track peak with envelope follower (instant attack, slow release)
         let inputPeak = stereoPeak(left, right)
-        peakBuffer[peakWriteIndex] = inputPeak
-
-        // Find maximum upcoming peak across the lookahead window
-        var maxUpcomingPeak: Float = 0
-        for i in 0..<lookaheadSamples {
-            maxUpcomingPeak = max(maxUpcomingPeak, peakBuffer[i])
+        if inputPeak > peakEnvelope {
+            peakEnvelope = inputPeak  // Instant attack
+        } else {
+            peakEnvelope = peakReleaseCoeff * peakEnvelope + (1.0 - peakReleaseCoeff) * inputPeak
         }
 
         // Calculate target gain to keep peaks below ceiling
         let targetGain: Float
-        if maxUpcomingPeak > ceilingLinear {
-            targetGain = ceilingLinear / maxUpcomingPeak
+        if peakEnvelope > ceilingLinear {
+            targetGain = ceilingLinear / peakEnvelope
         } else {
             targetGain = 1.0
         }
@@ -78,7 +81,7 @@ final class Limiter: Effect, @unchecked Sendable {
         currentGain = flushDenormals(currentGain)
         let finalGain = min(currentGain, 1.0)
 
-        peakWriteIndex = (peakWriteIndex + 1) % lookaheadSamples
+        peakEnvelope = flushDenormals(peakEnvelope)
         gainReductionDb = linearToDb(finalGain)
 
         return (delayedLeft * finalGain, delayedRight * finalGain)
@@ -86,8 +89,7 @@ final class Limiter: Effect, @unchecked Sendable {
 
     func reset() {
         audioDelayLine.reset()
-        peakBuffer.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
-        peakWriteIndex = 0
+        peakEnvelope = 0
         currentGain = 1.0
         gainReductionDb = 0
     }
