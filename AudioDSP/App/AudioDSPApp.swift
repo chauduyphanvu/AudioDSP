@@ -217,6 +217,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
 
+        // Set app icon (SPM puts resources in a separate bundle)
+        setAppIcon()
+
         // Initialize menu bar status item
         statusBarController = StatusBarController()
     }
@@ -581,6 +584,31 @@ class StatusBarActions: NSObject {
 
 extension Notification.Name {
     static let engineStatusChanged = Notification.Name("engineStatusChanged")
+}
+
+func setAppIcon() {
+    // Try module bundle first (SPM resource bundle)
+    if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+       let icon = NSImage(contentsOf: url) {
+        NSApp.applicationIconImage = icon
+        return
+    }
+
+    // Try main bundle
+    if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+       let icon = NSImage(contentsOf: url) {
+        NSApp.applicationIconImage = icon
+        return
+    }
+
+    // Search all bundles
+    for bundle in Bundle.allBundles {
+        if let url = bundle.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+            return
+        }
+    }
 }
 
 func showMainWindowGlobal() {
