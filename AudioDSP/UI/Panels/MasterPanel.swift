@@ -205,7 +205,13 @@ struct MasterPanel: View {
                 presetName: $newPresetName,
                 onSave: {
                     let preset = presetManager.createPreset(from: state, name: newPresetName)
-                    try? presetManager.save(preset)
+                    do {
+                        try presetManager.save(preset)
+                        presetManager.currentPreset = preset
+                        ToastManager.shared.show(action: "Saved \"\(newPresetName)\"", icon: "checkmark.circle.fill")
+                    } catch {
+                        ToastManager.shared.show(action: "Failed to save preset", icon: "xmark.circle.fill")
+                    }
                     showSavePreset = false
                     newPresetName = ""
                 },

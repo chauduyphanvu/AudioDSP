@@ -96,13 +96,19 @@ final class PresetManager: ObservableObject {
             switch effectPreset.effectType {
             case .parametricEQ:
                 state.eqBypassed = !effectPreset.enabled
-                // Parse EQ parameters (3 per band: freq, gain, q)
+                // Parse EQ parameters - supports both legacy (3 per band) and new format (4 per band with bandType)
+                let paramsPerBand = effectPreset.parameters.count >= 20 ? 4 : 3
                 for i in 0..<5 {
-                    let baseIndex = i * 3
+                    let baseIndex = i * paramsPerBand
                     if baseIndex + 2 < effectPreset.parameters.count {
                         state.eqBands[i].frequency = effectPreset.parameters[baseIndex]
                         state.eqBands[i].gainDb = effectPreset.parameters[baseIndex + 1]
                         state.eqBands[i].q = effectPreset.parameters[baseIndex + 2]
+                        // Load band type if present (new format)
+                        if paramsPerBand == 4, baseIndex + 3 < effectPreset.parameters.count {
+                            let typeRaw = Int(effectPreset.parameters[baseIndex + 3])
+                            state.eqBands[i].bandType = BandType(rawValue: typeRaw) ?? state.eqBands[i].bandType
+                        }
                     }
                 }
 
@@ -181,7 +187,7 @@ final class PresetManager: ObservableObject {
                     effectType: .parametricEQ,
                     enabled: !state.eqBypassed,
                     wetDry: 1.0,
-                    parameters: state.eqBands.flatMap { [$0.frequency, $0.gainDb, $0.q] }
+                    parameters: state.eqBands.flatMap { [$0.frequency, $0.gainDb, $0.q, Float($0.bandType.rawValue)] }
                 ),
                 EffectPreset(
                     effectType: .compressor,
@@ -255,12 +261,13 @@ final class PresetManager: ObservableObject {
 // MARK: - Built-in Presets
 
 extension Preset {
+    // Band type raw values: lowShelf=0, highShelf=1, peak=2, lowPass=3, highPass=4
     static let flat = Preset(
         name: "Flat",
         description: "No processing - flat response",
         effects: [
             EffectPreset(effectType: .parametricEQ, enabled: true, wetDry: 1.0,
-                         parameters: [80, 0, 0.707, 250, 0, 1.0, 1000, 0, 1.0, 4000, 0, 1.0, 12000, 0, 0.707]),
+                         parameters: [80, 0, 0.707, 0, 250, 0, 1.0, 2, 1000, 0, 1.0, 2, 4000, 0, 1.0, 2, 12000, 0, 0.707, 1]),
             EffectPreset(effectType: .compressor, enabled: false, wetDry: 1.0,
                          parameters: [-12, 4, 10, 100, 0]),
             EffectPreset(effectType: .limiter, enabled: true, wetDry: 1.0,
@@ -285,7 +292,7 @@ extension Preset {
         description: "Enhanced low frequencies",
         effects: [
             EffectPreset(effectType: .parametricEQ, enabled: true, wetDry: 1.0,
-                         parameters: [80, 6, 0.707, 250, 3, 1.0, 1000, 0, 1.0, 4000, 0, 1.0, 12000, 0, 0.707]),
+                         parameters: [80, 6, 0.707, 0, 250, 3, 1.0, 2, 1000, 0, 1.0, 2, 4000, 0, 1.0, 2, 12000, 0, 0.707, 1]),
             EffectPreset(effectType: .compressor, enabled: false, wetDry: 1.0,
                          parameters: [-12, 4, 10, 100, 0]),
             EffectPreset(effectType: .limiter, enabled: true, wetDry: 1.0,
@@ -310,7 +317,7 @@ extension Preset {
         description: "Enhanced mid frequencies for vocals",
         effects: [
             EffectPreset(effectType: .parametricEQ, enabled: true, wetDry: 1.0,
-                         parameters: [80, -2, 0.707, 250, -1, 1.0, 1000, 2, 1.0, 4000, 3, 1.0, 12000, 2, 0.707]),
+                         parameters: [80, -2, 0.707, 0, 250, -1, 1.0, 2, 1000, 2, 1.0, 2, 4000, 3, 1.0, 2, 12000, 2, 0.707, 1]),
             EffectPreset(effectType: .compressor, enabled: true, wetDry: 1.0,
                          parameters: [-18, 3, 15, 150, 2]),
             EffectPreset(effectType: .limiter, enabled: true, wetDry: 1.0,
@@ -335,7 +342,7 @@ extension Preset {
         description: "Increased perceived loudness",
         effects: [
             EffectPreset(effectType: .parametricEQ, enabled: true, wetDry: 1.0,
-                         parameters: [80, 4, 0.707, 250, 0, 1.0, 1000, 0, 1.0, 4000, 2, 1.0, 12000, 3, 0.707]),
+                         parameters: [80, 4, 0.707, 0, 250, 0, 1.0, 2, 1000, 0, 1.0, 2, 4000, 2, 1.0, 2, 12000, 3, 0.707, 1]),
             EffectPreset(effectType: .compressor, enabled: true, wetDry: 1.0,
                          parameters: [-20, 4, 5, 80, 6]),
             EffectPreset(effectType: .limiter, enabled: true, wetDry: 1.0,
