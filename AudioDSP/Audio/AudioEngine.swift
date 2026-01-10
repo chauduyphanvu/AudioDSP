@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import AudioToolbox
 import Combine
@@ -46,6 +47,7 @@ final class AudioEngine: ObservableObject {
     // MARK: - Private State
 
     private var levelUpdateTimer: Timer?
+    private var isAppActive: Bool = true
 
     // MARK: - Lifecycle
 
@@ -55,6 +57,23 @@ final class AudioEngine: ObservableObject {
         // Pre-allocate input buffer to avoid allocation on audio thread
         inputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: inputBufferCapacity)
         inputBuffer.initialize(repeating: 0, count: inputBufferCapacity)
+
+        // Observe app active state to pause UI updates when app is in background
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.isAppActive = true
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.isAppActive = false
+        }
     }
 
     deinit {
@@ -303,7 +322,9 @@ final class AudioEngine: ObservableObject {
     // MARK: - Level Metering
 
     private func startLevelMetering() {
-        levelUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+        // Use 20 Hz update rate - sufficient for visual metering and much lighter on CPU
+        // 60 Hz was causing system-wide performance issues (jank in other apps)
+        levelUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0/20.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateLevels()
             }
@@ -311,7 +332,8 @@ final class AudioEngine: ObservableObject {
     }
 
     private func updateLevels() {
-        guard let dspChain else { return }
+        // Skip UI updates when app is in background to reduce system-wide impact
+        guard isAppActive, let dspChain else { return }
 
         let (inL, inR) = dspChain.inputLevels
         let (outL, outR) = dspChain.outputLevels
