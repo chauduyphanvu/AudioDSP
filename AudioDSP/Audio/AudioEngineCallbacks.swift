@@ -81,10 +81,13 @@ func audioEngineOutputCallback(
         if bypassDSP {
             outL = left
             outR = right
-        } else {
-            let (procL, procR) = engine.dspChain.process(left: left, right: right)
+        } else if let dspChain = engine.dspChain {
+            let (procL, procR) = dspChain.process(left: left, right: right)
             outL = procL
             outR = procR
+        } else {
+            outL = left
+            outR = right
         }
 
         outData[frame * 2] = outL

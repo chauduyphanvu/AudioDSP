@@ -10,7 +10,7 @@ final class AudioEngine: ObservableObject {
 
     // These are accessed from audio thread callbacks - must be nonisolated
     // dspChain and fftAnalyzer need internal access for UI
-    nonisolated(unsafe) let dspChain: DSPChain
+    nonisolated(unsafe) var dspChain: DSPChain?
     nonisolated(unsafe) let fftAnalyzer: FFTAnalyzer
 
     // Ring buffer sized for low latency: 4096 samples = ~85ms at 48kHz
@@ -40,7 +40,7 @@ final class AudioEngine: ObservableObject {
 
     // MARK: - Configuration
 
-    let sampleRate: Double = 44100
+    private(set) var sampleRate: Double = 48000
     let channels: Int = 2
 
     // MARK: - Private State
@@ -50,7 +50,6 @@ final class AudioEngine: ObservableObject {
     // MARK: - Lifecycle
 
     init() {
-        dspChain = DSPChain.createDefault(sampleRate: Float(sampleRate))
         fftAnalyzer = FFTAnalyzer(fftSize: 2048)
 
         // Pre-allocate input buffer to avoid allocation on audio thread
@@ -130,6 +129,17 @@ final class AudioEngine: ObservableObject {
         guard let speakerID = AudioDeviceManager.findSpeakerDevice() else {
             throw AudioEngineError.deviceNotFound("No speaker device found")
         }
+
+        // Query output device sample rate (speaker is the master clock)
+        if let deviceSampleRate = AudioDeviceManager.getNominalSampleRate(speakerID) {
+            sampleRate = deviceSampleRate
+            Logger.audio.info("Using device sample rate: \(deviceSampleRate) Hz")
+        } else {
+            Logger.audio.warning("Could not query sample rate, using default: \(self.sampleRate) Hz")
+        }
+
+        // Create DSP chain with detected sample rate
+        dspChain = DSPChain.createDefault(sampleRate: Float(sampleRate))
 
         Logger.audio.info("Using BlackHole ID: \(blackholeID), Speaker ID: \(speakerID)")
 
@@ -301,6 +311,8 @@ final class AudioEngine: ObservableObject {
     }
 
     private func updateLevels() {
+        guard let dspChain else { return }
+
         let (inL, inR) = dspChain.inputLevels
         let (outL, outR) = dspChain.outputLevels
 

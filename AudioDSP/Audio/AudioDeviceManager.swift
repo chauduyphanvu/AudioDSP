@@ -81,6 +81,30 @@ enum AudioDeviceManager {
         return cfName as String
     }
 
+    /// Get the nominal sample rate of an audio device
+    static func getNominalSampleRate(_ deviceID: AudioDeviceID) -> Double? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var sampleRate: Float64 = 0
+        var dataSize = UInt32(MemoryLayout<Float64>.size)
+
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &propertyAddress,
+            0,
+            nil,
+            &dataSize,
+            &sampleRate
+        )
+
+        guard status == noErr, sampleRate > 0, sampleRate <= 384000 else { return nil }
+        return sampleRate
+    }
+
     /// Check if device has input channels available
     static func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
         channelCount(for: deviceID, scope: kAudioDevicePropertyScopeInput) > 0
