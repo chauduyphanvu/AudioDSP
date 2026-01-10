@@ -15,6 +15,7 @@ struct Knob: View {
     var size: CGFloat = 56
     var scaling: KnobScaling = .linear
     var defaultValue: Float? = nil  // For double-click reset
+    var tooltip: String? = nil  // Custom tooltip for this specific parameter
 
     @State private var isDragging = false
     @State private var isHovered = false
@@ -165,7 +166,7 @@ struct Knob: View {
                 let newNormalized = normalizedValue + Float(delta) * sens
                 value = denormalize(newNormalized)
             }
-            .help("Drag or scroll to adjust. Hold ⌥ Option for fine control." + (defaultValue != nil ? " Double-click to reset." : ""))
+            .help(tooltip ?? ("Drag or scroll to adjust. Hold ⌥ Option for fine control." + (defaultValue != nil ? " Double-click to reset." : "")))
 
             // Label
             Text(label)
@@ -210,9 +211,10 @@ struct CompactKnob: View {
     var unit: ParameterUnit = .generic
     var scaling: KnobScaling = .linear
     var defaultValue: Float? = nil
+    var tooltip: String? = nil
 
     var body: some View {
-        Knob(value: $value, range: range, label: label, unit: unit, size: 40, scaling: scaling, defaultValue: defaultValue)
+        Knob(value: $value, range: range, label: label, unit: unit, size: 40, scaling: scaling, defaultValue: defaultValue, tooltip: tooltip)
     }
 }
 

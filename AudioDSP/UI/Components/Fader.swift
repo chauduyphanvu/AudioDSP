@@ -9,6 +9,7 @@ struct Fader: View {
     var height: CGFloat = 150
     var showMeter: Bool = false
     var meterLevel: Float = 0
+    var tooltip: String? = nil  // Custom tooltip for this specific parameter
 
     @State private var isDragging = false
     @State private var isHovered = false
@@ -114,7 +115,7 @@ struct Fader: View {
                     let newValue = value + normalizedDelta * valueRange
                     value = min(max(newValue, range.lowerBound), range.upperBound)
                 }
-                .help("Drag or scroll to adjust. Hold ⌥ Option for fine control. Double-click to reset.")
+                .help(tooltip ?? "Drag or scroll to adjust. Hold ⌥ Option for fine control. Double-click to reset.")
             }
 
             // Label

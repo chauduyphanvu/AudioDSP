@@ -70,6 +70,7 @@ struct MasterPanel: View {
                 .padding(2)
                 .background(DSPTheme.surfaceBackground.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+                .help("A/B Comparison: Switch between two independent settings banks to compare different processing approaches. Great for testing whether your changes actually improve the sound.")
 
                 Spacer()
 
@@ -168,6 +169,7 @@ struct MasterPanel: View {
                         height: 100
                     )
                 }
+                .help("Input Meters: Shows the level of audio coming into the app. Green is healthy, yellow is loud, red means clipping. If you see constant red, reduce the volume in your source application.")
 
                 Spacer()
 
@@ -184,7 +186,8 @@ struct MasterPanel: View {
                             range: -24...24,
                             label: "Gain",
                             unit: .decibels,
-                            height: 100
+                            height: 100,
+                            tooltip: "Output Gain: Final volume adjustment before the audio leaves the app. Use this to match your output level to your playback system. Reduce if you see clipping on the output meters. Increase if the signal is too quiet after processing."
                         )
 
                         // Output meters
@@ -193,6 +196,7 @@ struct MasterPanel: View {
                             rightLevel: audioEngine.outputLevelRight,
                             height: 100
                         )
+                        .help("Output Meters: Shows the final processed audio level. Keep peaks in the green/yellow range. Consistent red indicates clipping — reduce the Output Gain or lower individual effect levels.")
                     }
                 }
             }

@@ -60,6 +60,7 @@ struct EQPanel: View {
                         color: DSPTheme.accent,
                         action: { showPhaseResponse.toggle() }
                     )
+                    .help("Phase Response: Shows how the EQ affects phase at different frequencies. Phase shifts can cause timing issues between frequencies. Linear phase mode eliminates this but adds latency.")
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
@@ -89,6 +90,7 @@ struct EQPanel: View {
                             color: DSPTheme.meterYellow,
                             action: { state.clearAllEQSolo() }
                         )
+                        .help("Clear All Solos: Un-solos all EQ bands so you can hear the full EQ curve again.")
                     }
                 }
                 .padding(.horizontal, 6)
@@ -231,7 +233,7 @@ struct BandControl: View {
                 .onTapGesture {
                     band.enabled.toggle()
                 }
-                .help(band.enabled ? "Click to disable band" : "Click to enable band")
+.help(band.enabled ? "Band Enabled: Click to bypass this band temporarily. The band keeps its settings but stops affecting the audio. Great for A/B testing individual band changes." : "Band Disabled: Click to re-enable this band and hear its effect on the audio.")
 
                 // Band name and type selector (inline)
                 Menu {
@@ -326,7 +328,7 @@ struct BandControl: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help("Solo this band")
+                .help("Solo: Listen to only this EQ band in isolation. Useful for identifying problematic frequencies or hearing exactly what each band is affecting. Click again to un-solo.")
             }
 
             // Filter type indicator
@@ -365,7 +367,8 @@ struct BandControl: View {
                     label: "Freq",
                     unit: .hertz,
                     scaling: .logarithmic,
-                    defaultValue: defaultFrequency
+                    defaultValue: defaultFrequency,
+                    tooltip: "Frequency: The center point where this EQ band operates. Sub-bass is 20-60Hz, bass 60-250Hz, mids 250-2kHz, upper mids 2-6kHz, highs 6-20kHz. For shelves and filters, this is the corner frequency."
                 )
 
                 // Gain slider with value display
@@ -398,13 +401,17 @@ struct BandControl: View {
                         range: band.bandType.qRange,
                         label: qParameterLabel,
                         unit: .generic,
-                        defaultValue: band.bandType.defaultQ
+                        defaultValue: band.bandType.defaultQ,
+                        tooltip: band.bandType.isResonant
+                            ? "Resonance: For filters, this controls the emphasis at the cutoff frequency. Higher values create a pronounced peak before the rolloff, adding character but potentially causing ringing."
+                            : "Q (Quality Factor): Controls the bandwidth of the EQ band. Higher Q = narrower band for surgical cuts. Lower Q = wider band for gentle, musical adjustments. The bandwidth in octaves is shown below."
                     )
 
                     if !band.bandType.isResonant {
                         Text(String(format: "%.1f oct", band.bandwidthOctaves))
                             .font(.system(size: 8, weight: .medium))
                             .foregroundColor(DSPTheme.textTertiary)
+                            .help("Bandwidth: The range of frequencies affected by this band, measured in octaves. Wider bandwidth affects more frequencies; narrower focuses on a specific area.")
                     }
                 }
             }
@@ -430,14 +437,16 @@ struct BandControl: View {
                             label: "Thresh",
                             value: $band.dynamicsThreshold,
                             range: -60...0,
-                            format: "%.0f dB"
+                            format: "%.0f dB",
+                            tooltip: "Dynamic EQ Threshold: The level at which dynamic processing begins. When the signal in this frequency band exceeds this level, the EQ gain is automatically reduced. Great for taming resonances only when they become problematic."
                         )
 
                         DynamicsControl(
                             label: "Ratio",
                             value: $band.dynamicsRatio,
                             range: 1...10,
-                            format: "%.1f:1"
+                            format: "%.1f:1",
+                            tooltip: "Dynamic EQ Ratio: How much the EQ gain is reduced when the threshold is exceeded. Higher ratios mean more aggressive reduction. 2:1 is gentle, 4:1 is moderate, 8:1+ is very aggressive."
                         )
                     }
                 }
@@ -529,6 +538,7 @@ private struct DynamicsControl: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
     let format: String
+    var tooltip: String? = nil
 
     @State private var isDragging = false
     @State private var dragStartValue: Float = 0
@@ -570,7 +580,7 @@ private struct DynamicsControl: View {
                     isDragging = false
                 }
         )
-        .help("Drag vertically to adjust")
+        .help(tooltip ?? "Drag vertically to adjust")
     }
 }
 
@@ -607,7 +617,7 @@ private struct DriveControl: View {
                     isDragging = false
                 }
         )
-        .help("Drive: Drag or scroll to adjust")
+.help("Saturation Drive: Controls the intensity of the saturation effect. Higher values add more harmonic distortion and warmth. Start low (3-6dB) for subtle warming, go higher (12-18dB) for more obvious coloration and compression.")
     }
 }
 
@@ -759,7 +769,7 @@ struct GainSlider: View {
                 gainDb = 0
             }
         }
-        .help("Drag to adjust gain. Hold Option for fine control. Double-click to reset to 0 dB.")
+        .help("Gain: Boosts or cuts frequencies at this band's frequency. Positive values (+dB) make that frequency range louder. Negative values (-dB) reduce it. Use boosts sparingly; cuts are often more transparent. ⌥ Option for fine control, double-click to reset.")
     }
 
     private func dbToY(_ db: Float, height: CGFloat) -> CGFloat {
