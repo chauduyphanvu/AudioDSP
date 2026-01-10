@@ -326,7 +326,7 @@ struct EQCurveView: View {
                         )
                 )
                 .shadow(color: bandColor.opacity(0.7), radius: isSelected || isDraggingThis ? 8 : 4)
-                .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                .shadow(color: DSPTheme.shadowColor, radius: 2, y: 1)
 
             // Band number indicator
             Text("\(index + 1)")
@@ -345,7 +345,7 @@ struct EQCurveView: View {
                             .foregroundColor(.black)
                     )
                     .offset(x: markerSize / 2 + 2, y: -markerSize / 2 - 2)
-                    .shadow(color: .black.opacity(0.3), radius: 2)
+                    .shadow(color: DSPTheme.shadowColor, radius: 2)
             }
         }
         .frame(width: 44, height: 44)  // Hit target size
@@ -488,7 +488,7 @@ struct EQCurveView: View {
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(DSPTheme.panelBackground.opacity(0.9))
-                .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
+                .shadow(color: DSPTheme.shadowColor, radius: 4, y: 2)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 5)

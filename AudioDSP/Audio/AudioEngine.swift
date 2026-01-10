@@ -82,6 +82,7 @@ final class AudioEngine: ObservableObject {
             isRunning = true
             statusMessage = "Processing audio"
             startLevelMetering()
+            postEngineStatusNotification(isRunning: true)
             Logger.audio.info("Audio engine started successfully")
         } catch {
             statusMessage = "Error: \(error.localizedDescription)"
@@ -106,8 +107,17 @@ final class AudioEngine: ObservableObject {
         ringBuffer.clear()
         isRunning = false
         statusMessage = "Stopped"
+        postEngineStatusNotification(isRunning: false)
 
         Logger.audio.info("Audio engine stopped")
+    }
+
+    private func postEngineStatusNotification(isRunning: Bool) {
+        NotificationCenter.default.post(
+            name: .engineStatusChanged,
+            object: nil,
+            userInfo: ["isRunning": isRunning]
+        )
     }
 
     // MARK: - CoreAudio Setup

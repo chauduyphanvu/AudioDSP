@@ -721,7 +721,7 @@ struct GainSlider: View {
                                 )
                         )
                         .shadow(color: color.opacity(0.6), radius: isDragging ? 6 : 3)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                        .shadow(color: DSPTheme.shadowColor, radius: 2, y: 1)
 
                     // Center dot
                     Circle()

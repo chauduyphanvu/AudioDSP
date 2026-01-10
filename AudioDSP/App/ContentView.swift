@@ -7,90 +7,65 @@ struct ContentView: View {
     @StateObject private var audioEngine = AudioEngine()
     @StateObject private var sessionManager = SessionManager()
 
-    @State private var selectedTab: Tab = .effects
-
-    enum Tab: String, CaseIterable {
-        case effects = "Effects"
-        case settings = "Settings"
-
-        var icon: String {
-            switch self {
-            case .effects: return "slider.horizontal.3"
-            case .settings: return "gearshape"
-            }
+    private var windowTitle: String {
+        var title = "Audio DSP"
+        if let currentPreset = presetManager.currentPreset {
+            title += " — \(currentPreset.name)"
         }
+        if !audioEngine.isRunning {
+            title += " (Stopped)"
+        }
+        return title
     }
 
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Master panel (always visible)
                 MasterPanel(
                     state: state,
                     presetManager: presetManager,
                     audioEngine: audioEngine
                 )
                 .padding(16)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Master Controls")
 
-            // Tab selector
-            HStack(spacing: 0) {
-                ForEach(Tab.allCases, id: \.self) { tab in
-                    TabButton(
-                        title: tab.rawValue,
-                        icon: tab.icon,
-                        isSelected: selectedTab == tab
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedTab = tab
-                        }
-                    }
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .background(DSPTheme.panelBackground)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(DSPTheme.borderColor.opacity(0.5))
-                    .frame(height: 1)
-            }
-
-            // Main content area
-            ScrollView {
-                switch selectedTab {
-                case .effects:
+                ScrollView {
                     effectsContent
-
-                case .settings:
-                    settingsContent
                 }
-            }
-            .background(DSPTheme.background)
+                .accessibilityLabel("Effects")
+                .background(DSPTheme.background)
             }
             .background(DSPTheme.background)
 
-            // Toast overlay for keyboard shortcut feedback
             ToastOverlay()
+        }
+        .navigationTitle(windowTitle)
+        .toolbar {
+            MainToolbar(
+                state: state,
+                presetManager: presetManager,
+                audioEngine: audioEngine
+            )
         }
         .onAppear {
             state.audioEngine = audioEngine
             Task {
                 await audioEngine.start()
-                // Restore previous session or load default preset
                 if !sessionManager.restoreSession(into: state) {
                     if let firstPreset = presetManager.presets.first {
                         presetManager.load(firstPreset, into: state)
                     }
                 }
                 state.syncToChain()
-                // Enable auto-save for future changes
                 sessionManager.bindAutoSave(to: state)
             }
         }
         .onDisappear {
             audioEngine.stop()
         }
+        .focusable()
+        .focusEffectDisabled()
         .keyboardShortcutHandlers(
             state: state,
             audioEngine: audioEngine,
@@ -101,205 +76,218 @@ struct ContentView: View {
     @ViewBuilder
     private var effectsContent: some View {
         VStack(spacing: 16) {
-            // EQ Panel with spectrum overlay
             EQPanel(state: state, sampleRate: Float(audioEngine.sampleRate), spectrumData: audioEngine.spectrumData)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Equalizer")
 
             HStack(alignment: .top, spacing: 16) {
-                // Dynamics panel (left)
                 DynamicsPanel(state: state)
                     .frame(maxWidth: 380)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Dynamics")
 
-                // Effects panel (right)
                 EffectsPanel(state: state)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Effects")
             }
         }
         .padding(16)
     }
-
-    @ViewBuilder
-    private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Audio Engine section
-            SettingsSection(title: "Audio Engine", icon: "waveform.circle.fill") {
-                VStack(spacing: 0) {
-                    SettingsRow(label: "Sample Rate") {
-                        Text("\(Int(audioEngine.sampleRate)) Hz")
-                            .font(DSPTypography.parameterValue)
-                            .foregroundColor(DSPTheme.textPrimary)
-                    }
-
-                    Divider()
-                        .background(DSPTheme.borderColor.opacity(0.3))
-
-                    SettingsRow(label: "Engine Status") {
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(audioEngine.isRunning ? DSPTheme.meterGreen : DSPTheme.meterRed)
-                                .frame(width: 8, height: 8)
-                                .shadow(color: (audioEngine.isRunning ? DSPTheme.meterGreen : DSPTheme.meterRed).opacity(0.5), radius: 4)
-                            Text(audioEngine.statusMessage)
-                                .font(DSPTypography.body)
-                                .foregroundColor(DSPTheme.textPrimary)
-                        }
-                    }
-
-                    Divider()
-                        .background(DSPTheme.borderColor.opacity(0.3))
-
-                    SettingsRow(label: "Control") {
-                        Button(action: {
-                            if audioEngine.isRunning {
-                                audioEngine.stop()
-                            } else {
-                                Task { await audioEngine.start() }
-                            }
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: audioEngine.isRunning ? "stop.fill" : "play.fill")
-                                    .font(.system(size: 10))
-                                Text(audioEngine.isRunning ? "Stop Engine" : "Start Engine")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .foregroundColor(audioEngine.isRunning ? DSPTheme.meterRed : DSPTheme.meterGreen)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(
-                                (audioEngine.isRunning ? DSPTheme.meterRed : DSPTheme.meterGreen).opacity(0.15)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke((audioEngine.isRunning ? DSPTheme.meterRed : DSPTheme.meterGreen).opacity(0.3), lineWidth: 0.5)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            // About section
-            SettingsSection(title: "About", icon: "info.circle.fill") {
-                VStack(spacing: 0) {
-                    SettingsRow(label: "Application") {
-                        Text("AudioDSP")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(DSPTheme.textPrimary)
-                    }
-
-                    Divider()
-                        .background(DSPTheme.borderColor.opacity(0.3))
-
-                    SettingsRow(label: "Description") {
-                        Text("Professional audio processing")
-                            .font(DSPTypography.body)
-                            .foregroundColor(DSPTheme.textSecondary)
-                    }
-
-                    Divider()
-                        .background(DSPTheme.borderColor.opacity(0.3))
-
-                    SettingsRow(label: "Version") {
-                        HStack(spacing: 6) {
-                            Text("1.0.0")
-                                .font(DSPTypography.mono)
-                                .foregroundColor(DSPTheme.textSecondary)
-                            Text("Build 1")
-                                .font(DSPTypography.caption)
-                                .foregroundColor(DSPTheme.textTertiary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(DSPTheme.surfaceBackground)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                        }
-                    }
-                }
-            }
-
-            Spacer()
-        }
-        .padding(20)
-        .frame(maxWidth: 500, alignment: .leading)
-    }
 }
 
-/// Settings section with header
-struct SettingsSection<Content: View>: View {
-    let title: String
-    let icon: String
-    @ViewBuilder var content: Content
+// MARK: - Main Toolbar
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+struct MainToolbar: ToolbarContent {
+    @ObservedObject var state: DSPState
+    @ObservedObject var presetManager: PresetManager
+    @ObservedObject var audioEngine: AudioEngine
+
+    private var isAllBypassed: Bool {
+        state.eqBypassed && state.compressorBypassed && state.limiterBypassed &&
+        state.reverbBypassed && state.delayBypassed && state.stereoWidenerBypassed &&
+        state.bassEnhancerBypassed && state.vocalClarityBypassed
+    }
+
+    var body: some ToolbarContent {
+        // Leading: Engine control and status
+        ToolbarItem(placement: .navigation) {
             HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DSPTheme.accent)
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(DSPTheme.textPrimary)
+                // Engine toggle button
+                Button {
+                    Task {
+                        if audioEngine.isRunning {
+                            audioEngine.stop()
+                        } else {
+                            await audioEngine.start()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: audioEngine.isRunning ? "stop.fill" : "play.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(audioEngine.isRunning ? "Stop" : "Start")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(audioEngine.isRunning ? .red : .green)
+                }
+                .buttonStyle(.bordered)
+                .help(audioEngine.isRunning ? "Stop Engine (⌘.)" : "Start Engine (⌘R)")
+
+                // Status indicator
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(audioEngine.isRunning ? Color.green : Color.red)
+                        .frame(width: 6, height: 6)
+                    Text(audioEngine.statusMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+
+        // Principal: Preset selector
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 12) {
+                // Previous preset
+                Button {
+                    presetManager.loadPrevious(into: state)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(presetManager.presets.isEmpty)
+                .help("Previous Preset (⌘[)")
+
+                // Preset menu
+                Menu {
+                    ForEach(presetManager.presets) { preset in
+                        Button {
+                            presetManager.load(preset, into: state)
+                        } label: {
+                            HStack {
+                                Text(preset.name)
+                                if preset.id == presetManager.currentPreset?.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+
+                    if !presetManager.presets.isEmpty {
+                        Divider()
+                    }
+
+                    Button {
+                        NotificationCenter.default.post(name: .savePreset, object: nil)
+                    } label: {
+                        Label("Save Preset...", systemImage: "square.and.arrow.down")
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 11))
+                        Text(presetManager.currentPreset?.name ?? "No Preset")
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                            .frame(minWidth: 100, maxWidth: 150)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .help("Select Preset")
+
+                // Next preset
+                Button {
+                    presetManager.loadNext(into: state)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(presetManager.presets.isEmpty)
+                .help("Next Preset (⌘])")
+            }
+        }
+
+        // Trailing: A/B, Bypass, Undo/Redo
+        ToolbarItemGroup(placement: .primaryAction) {
+            // A/B Toggle
+            ToolbarABToggle(currentSlot: state.abSlot) {
+                state.switchABSlot()
             }
 
-            content
-                .background(DSPTheme.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(DSPTheme.borderColor.opacity(0.5), lineWidth: 0.5)
-                )
+            Divider()
+
+            // Bypass All
+            Button {
+                state.toggleBypassAll()
+            } label: {
+                Image(systemName: isAllBypassed ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(isAllBypassed ? .orange : .primary)
+            }
+            .buttonStyle(.bordered)
+            .tint(isAllBypassed ? .orange : nil)
+            .help(isAllBypassed ? "Enable All Effects (⌥⌘0)" : "Bypass All Effects (⌥⌘0)")
+
+            Divider()
+
+            // Undo
+            Button {
+                state.undo()
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.borderless)
+            .disabled(!state.canUndo)
+            .help("Undo (⌘Z)")
+
+            // Redo
+            Button {
+                state.redo()
+            } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.borderless)
+            .disabled(!state.canRedo)
+            .help("Redo (⇧⌘Z)")
         }
     }
 }
 
-/// Settings row with label and value
-struct SettingsRow<Content: View>: View {
-    let label: String
-    @ViewBuilder var content: Content
+// MARK: - Toolbar A/B Toggle
 
-    var body: some View {
-        HStack {
-            Text(label)
-                .font(DSPTypography.body)
-                .foregroundColor(DSPTheme.textSecondary)
-            Spacer()
-            content
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
-}
-
-/// Polished tab button with underline indicator
-struct TabButton: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
+struct ToolbarABToggle: View {
+    let currentSlot: ABSlot
     let action: () -> Void
-
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: icon)
-                        .font(.system(size: 12, weight: .medium))
-                    Text(title)
-                        .font(DSPTypography.heading)
-                }
-                .foregroundColor(isSelected ? DSPTheme.textPrimary : (isHovered ? DSPTheme.textSecondary : DSPTheme.textTertiary))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+            HStack(spacing: 2) {
+                Text("A")
+                    .font(.system(size: 11, weight: currentSlot == .a ? .bold : .regular, design: .rounded))
+                    .foregroundColor(currentSlot == .a ? .white : .secondary)
+                    .frame(width: 20, height: 20)
+                    .background(currentSlot == .a ? Color.accentColor : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
 
-                Rectangle()
-                    .fill(isSelected ? DSPTheme.accent : Color.clear)
-                    .frame(height: 2)
-                    .animation(.easeInOut(duration: 0.2), value: isSelected)
+                Text("B")
+                    .font(.system(size: 11, weight: currentSlot == .b ? .bold : .regular, design: .rounded))
+                    .foregroundColor(currentSlot == .b ? .white : .secondary)
+                    .frame(width: 20, height: 20)
+                    .background(currentSlot == .b ? Color.accentColor : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
             }
+            .padding(2)
+            .background(Color.primary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            isHovered = hovering
-        }
+        .help("Toggle A/B Comparison (⌘B)")
     }
 }
 

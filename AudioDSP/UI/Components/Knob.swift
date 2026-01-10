@@ -81,7 +81,7 @@ struct Knob: View {
                 Circle()
                     .fill(DSPTheme.knobRing)
                     .frame(width: size + 8, height: size + 8)
-                    .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                    .shadow(color: DSPTheme.shadowColor, radius: 2, y: 1)
 
                 // Value arc
                 Circle()
@@ -103,14 +103,17 @@ struct Knob: View {
                         Circle()
                             .stroke(
                                 LinearGradient(
-                                    colors: [.white.opacity(isActive ? 0.15 : 0.1), .clear],
+                                    colors: [
+                                        Color(light: .black, dark: .white).opacity(isActive ? 0.15 : 0.1),
+                                        .clear
+                                    ],
                                     startPoint: .top,
                                     endPoint: .bottom
                                 ),
                                 lineWidth: 1
                             )
                     )
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 2)
+                    .shadow(color: DSPTheme.shadowColor, radius: 3, y: 2)
 
                 // Pointer indicator
                 VStack {
@@ -174,6 +177,27 @@ struct Knob: View {
                 .font(DSPTypography.parameterValue)
                 .foregroundColor(isActive ? DSPTheme.highlight : DSPTheme.textPrimary)
                 .frame(minWidth: 50)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label)")
+        .accessibilityValue(unit.format(value))
+        .accessibilityHint("Swipe up or down to adjust")
+        .accessibilityAdjustableAction { direction in
+            let step: Float
+            switch scaling {
+            case .linear:
+                step = (range.upperBound - range.lowerBound) * 0.05
+            case .logarithmic:
+                step = value * 0.05
+            }
+            switch direction {
+            case .increment:
+                value = min(value + step, range.upperBound)
+            case .decrement:
+                value = max(value - step, range.lowerBound)
+            @unknown default:
+                break
+            }
         }
     }
 }

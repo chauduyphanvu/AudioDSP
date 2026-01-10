@@ -215,6 +215,9 @@ struct MasterPanel: View {
                 }
             )
         }
+        .onReceive(NotificationCenter.default.publisher(for: .savePreset)) { _ in
+            showSavePreset = true
+        }
     }
 }
 
@@ -348,7 +351,7 @@ struct MiniSlider: View {
                 Circle()
                     .fill(isDragging ? DSPTheme.accent : DSPTheme.textPrimary)
                     .frame(width: 10, height: 10)
-                    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                    .shadow(color: DSPTheme.shadowColor, radius: 2, y: 1)
                     .offset(x: (geometry.size.width - 10) * CGFloat(normalizedValue))
             }
             .frame(height: geometry.size.height)
@@ -533,7 +536,7 @@ struct SavePresetSheet: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(DSPTheme.borderColor, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+        .shadow(color: DSPTheme.shadowColor, radius: 20, y: 10)
         .onAppear {
             isTextFieldFocused = true
         }

@@ -115,7 +115,7 @@ struct ToastView: View {
                         .stroke(iconColor.opacity(0.3), lineWidth: 1)
                 )
         )
-        .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+        .shadow(color: DSPTheme.shadowColor, radius: 20, y: 10)
     }
 }
 

@@ -1,98 +1,191 @@
 import AppKit
 import SwiftUI
 
-/// Pro audio theme colors and styles
+/// Pro audio theme colors and styles with adaptive light/dark mode support
 enum DSPTheme {
-    // MARK: - Background Colors
+    // MARK: - Background Colors (Adaptive)
 
-    static let background = Color(hex: "#0D0D0F")
-    static let panelBackground = Color(hex: "#1A1A1E")
-    static let cardBackground = Color(hex: "#232328")
-    static let surfaceBackground = Color(hex: "#2A2A30")
+    static let background = Color(
+        light: Color(hex: "#F5F5F7"),
+        dark: Color(hex: "#0D0D0F")
+    )
 
-    // MARK: - Accent Colors
+    static let panelBackground = Color(
+        light: Color(hex: "#FFFFFF"),
+        dark: Color(hex: "#1A1A1E")
+    )
 
-    static let accent = Color(hex: "#3B82F6")
-    static let accentSecondary = Color(hex: "#6366F1")
-    static let highlight = Color(hex: "#60A5FA")
+    static let cardBackground = Color(
+        light: Color(hex: "#F0F0F2"),
+        dark: Color(hex: "#232328")
+    )
 
-    // MARK: - Meter Colors
+    static let surfaceBackground = Color(
+        light: Color(hex: "#E8E8EC"),
+        dark: Color(hex: "#2A2A30")
+    )
+
+    // MARK: - Accent Colors (System-Aware)
+
+    static var accent: Color { Color.accentColor }
+    static var accentSecondary: Color { Color.accentColor.opacity(0.8) }
+    static var highlight: Color { Color.accentColor.opacity(0.9) }
+
+    // MARK: - Meter Colors (Consistent across modes)
 
     static let meterGreen = Color(hex: "#22C55E")
     static let meterYellow = Color(hex: "#EAB308")
     static let meterOrange = Color(hex: "#F97316")
     static let meterRed = Color(hex: "#EF4444")
 
-    // MARK: - EQ Band Colors
+    // MARK: - EQ Band Colors (Optimized for both modes)
 
-    static let eqBand1 = Color(hex: "#F87171")  // Low Shelf - Coral
-    static let eqBand2 = Color(hex: "#FBBF24")  // Low Mid - Amber
-    static let eqBand3 = Color(hex: "#34D399")  // Mid - Green
-    static let eqBand4 = Color(hex: "#38BDF8")  // High Mid - Sky
-    static let eqBand5 = Color(hex: "#A78BFA")  // High Shelf - Lavender
+    static let eqBand1 = Color(
+        light: Color(hex: "#DC2626"),  // Low Shelf - Deeper coral for contrast
+        dark: Color(hex: "#F87171")
+    )
+    static let eqBand2 = Color(
+        light: Color(hex: "#D97706"),  // Low Mid - Deeper amber
+        dark: Color(hex: "#FBBF24")
+    )
+    static let eqBand3 = Color(
+        light: Color(hex: "#059669"),  // Mid - Deeper green
+        dark: Color(hex: "#34D399")
+    )
+    static let eqBand4 = Color(
+        light: Color(hex: "#0284C7"),  // High Mid - Deeper sky
+        dark: Color(hex: "#38BDF8")
+    )
+    static let eqBand5 = Color(
+        light: Color(hex: "#7C3AED"),  // High Shelf - Deeper lavender
+        dark: Color(hex: "#A78BFA")
+    )
 
     static var eqBandColors: [Color] {
         [eqBand1, eqBand2, eqBand3, eqBand4, eqBand5]
     }
 
-    // MARK: - Text Colors
+    // MARK: - Text Colors (Adaptive)
 
-    static let textPrimary = Color(hex: "#F4F4F5")
-    static let textSecondary = Color(hex: "#A1A1AA")
-    static let textTertiary = Color(hex: "#71717A")
-    static let textDisabled = Color(hex: "#52525B")
-
-    // MARK: - Knob & Control Colors
-
-    static let knobFace = LinearGradient(
-        colors: [Color(hex: "#404045"), Color(hex: "#2A2A2E")],
-        startPoint: .top,
-        endPoint: .bottom
+    static let textPrimary = Color(
+        light: Color(hex: "#1A1A1E"),
+        dark: Color(hex: "#F4F4F5")
     )
 
-    static let knobRing = LinearGradient(
-        colors: [Color(hex: "#3A3A40"), Color(hex: "#1F1F23")],
-        startPoint: .top,
-        endPoint: .bottom
+    static let textSecondary = Color(
+        light: Color(hex: "#52525B"),
+        dark: Color(hex: "#A1A1AA")
     )
 
-    static let knobIndicator = Color(hex: "#60A5FA")
-
-    static let faderTrack = Color(hex: "#1A1A1E")
-    static let faderFill = LinearGradient(
-        colors: [accent, accentSecondary],
-        startPoint: .bottom,
-        endPoint: .top
+    static let textTertiary = Color(
+        light: Color(hex: "#71717A"),
+        dark: Color(hex: "#71717A")
     )
 
-    // MARK: - Border & Shadow
+    static let textDisabled = Color(
+        light: Color(hex: "#A1A1AA"),
+        dark: Color(hex: "#52525B")
+    )
 
-    static let borderColor = Color(hex: "#3F3F46")
-    static let borderColorLight = Color(hex: "#52525B")
+    // MARK: - Knob & Control Colors (Adaptive)
 
-    static let shadowColor = Color.black.opacity(0.5)
-    static let glowColor = accent.opacity(0.3)
+    static var knobFace: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(light: Color(hex: "#E4E4E7"), dark: Color(hex: "#404045")),
+                Color(light: Color(hex: "#D4D4D8"), dark: Color(hex: "#2A2A2E"))
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    static var knobRing: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(light: Color(hex: "#D4D4D8"), dark: Color(hex: "#3A3A40")),
+                Color(light: Color(hex: "#A1A1AA"), dark: Color(hex: "#1F1F23"))
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    static var knobIndicator: Color { accent }
+
+    static let faderTrack = Color(
+        light: Color(hex: "#E4E4E7"),
+        dark: Color(hex: "#1A1A1E")
+    )
+
+    static var faderFill: LinearGradient {
+        LinearGradient(
+            colors: [accent, accentSecondary],
+            startPoint: .bottom,
+            endPoint: .top
+        )
+    }
+
+    // MARK: - Border & Shadow (Adaptive)
+
+    static let borderColor = Color(
+        light: Color(hex: "#D4D4D8"),
+        dark: Color(hex: "#3F3F46")
+    )
+
+    static let borderColorLight = Color(
+        light: Color(hex: "#E4E4E7"),
+        dark: Color(hex: "#52525B")
+    )
+
+    static var shadowColor: Color {
+        Color(light: Color.black.opacity(0.15), dark: Color.black.opacity(0.5))
+    }
+
+    static var glowColor: Color { accent.opacity(0.3) }
 
     // MARK: - Effect States
 
     static let effectEnabled = Color(hex: "#22C55E")
-    static let effectBypassed = Color(hex: "#52525B")
-    static let effectSelected = accent
 
-    // MARK: - Spectrum Analyzer
-
-    static let spectrumGradient = LinearGradient(
-        colors: [
-            Color(hex: "#3B82F6").opacity(0.1),
-            Color(hex: "#3B82F6").opacity(0.5),
-            Color(hex: "#60A5FA").opacity(0.8),
-        ],
-        startPoint: .bottom,
-        endPoint: .top
+    static let effectBypassed = Color(
+        light: Color(hex: "#A1A1AA"),
+        dark: Color(hex: "#52525B")
     )
 
-    static let spectrumLine = Color(hex: "#60A5FA")
-    static let spectrumGrid = Color(hex: "#27272A")
+    static var effectSelected: Color { accent }
+
+    // MARK: - Spectrum Analyzer (Adaptive)
+
+    static var spectrumGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                accent.opacity(0.1),
+                accent.opacity(0.5),
+                accent.opacity(0.8)
+            ],
+            startPoint: .bottom,
+            endPoint: .top
+        )
+    }
+
+    static var spectrumLine: Color { accent }
+
+    static let spectrumGrid = Color(
+        light: Color(hex: "#E4E4E7"),
+        dark: Color(hex: "#27272A")
+    )
+}
+
+// MARK: - Adaptive Color Extension
+
+extension Color {
+    init(light: Color, dark: Color) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(isDark ? dark : light)
+        })
+    }
 }
 
 // MARK: - Color Extension

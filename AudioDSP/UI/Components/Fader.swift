@@ -122,6 +122,21 @@ struct Fader: View {
                 .font(DSPTypography.caption)
                 .foregroundColor(isActive ? DSPTheme.textSecondary : DSPTheme.textTertiary)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label)")
+        .accessibilityValue(unit.format(value))
+        .accessibilityHint("Swipe up or down to adjust")
+        .accessibilityAdjustableAction { direction in
+            let step = (range.upperBound - range.lowerBound) * 0.05
+            switch direction {
+            case .increment:
+                value = min(value + step, range.upperBound)
+            case .decrement:
+                value = max(value - step, range.lowerBound)
+            @unknown default:
+                break
+            }
+        }
     }
 }
 
@@ -134,21 +149,32 @@ struct FaderCap: View {
         isDragging || isHovered
     }
 
+    private var capGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(
+                    light: Color(hex: isActive ? "#BEBEC3" : "#AEAEB3"),
+                    dark: Color(hex: isActive ? "#6A6A70" : "#5A5A60")
+                ),
+                Color(
+                    light: Color(hex: isActive ? "#9E9EA3" : "#8E8E93"),
+                    dark: Color(hex: isActive ? "#4A4A50" : "#3A3A40")
+                )
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     var body: some View {
         RoundedRectangle(cornerRadius: 4)
-            .fill(
-                LinearGradient(
-                    colors: [Color(hex: isActive ? "#6A6A70" : "#5A5A60"), Color(hex: isActive ? "#4A4A50" : "#3A3A40")],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .fill(capGradient)
             .frame(width: 28, height: 18)
             .overlay(
                 VStack(spacing: 2) {
                     ForEach(0..<3, id: \.self) { _ in
                         Capsule()
-                            .fill(Color.white.opacity(isActive ? 0.2 : 0.15))
+                            .fill(Color(light: .black, dark: .white).opacity(isActive ? 0.2 : 0.15))
                             .frame(width: 16, height: 1)
                     }
                 }
@@ -157,14 +183,17 @@ struct FaderCap: View {
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(
                         LinearGradient(
-                            colors: [.white.opacity(isActive ? 0.25 : 0.2), .clear],
+                            colors: [
+                                Color(light: .black, dark: .white).opacity(isActive ? 0.25 : 0.2),
+                                .clear
+                            ],
                             startPoint: .top,
                             endPoint: .bottom
                         ),
                         lineWidth: 1
                     )
             )
-            .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+            .shadow(color: DSPTheme.shadowColor, radius: 2, y: 1)
             .shadow(color: isActive ? DSPTheme.accent.opacity(0.4) : .clear, radius: 6)
             .scaleEffect(isDragging ? 1.05 : 1.0)
             .animation(.easeOut(duration: 0.15), value: isDragging)
