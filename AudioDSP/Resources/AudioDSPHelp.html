@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio DSP Help</title>
+    <style>
+        :root {
+            --bg-primary: #0D0D0F;
+            --bg-secondary: #1A1A1E;
+            --bg-card: #232328;
+            --text-primary: #F4F4F5;
+            --text-secondary: #A1A1AA;
+            --accent: #3B82F6;
+            --accent-light: #60A5FA;
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #F5F5F7;
+                --bg-secondary: #FFFFFF;
+                --bg-card: #F0F0F2;
+                --text-primary: #1A1A1E;
+                --text-secondary: #52525B;
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 40px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent-light));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--accent-light);
+            border-bottom: 1px solid var(--bg-card);
+            padding-bottom: 0.5rem;
+        }
+
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        ul, ol {
+            margin-bottom: 1rem;
+            padding-left: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        code {
+            font-family: "SF Mono", Monaco, monospace;
+            background: var(--bg-card);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        kbd {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-card);
+            border: 1px solid var(--text-secondary);
+            border-radius: 4px;
+            padding: 0.15rem 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--bg-card);
+        }
+
+        .shortcut-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        .shortcut-table th,
+        .shortcut-table td {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--bg-card);
+        }
+
+        .shortcut-table th {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .shortcut-table td {
+            color: var(--text-secondary);
+        }
+
+        .shortcut-table td:last-child {
+            text-align: right;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        .tip {
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 4px solid var(--accent);
+            padding: 1rem 1.25rem;
+            margin: 1rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .tip-title {
+            font-weight: 600;
+            color: var(--accent-light);
+            margin-bottom: 0.25rem;
+        }
+
+        .warning {
+            background: rgba(234, 179, 8, 0.1);
+            border-left: 4px solid var(--yellow);
+            padding: 1rem 1.25rem;
+            margin: 1rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .warning-title {
+            font-weight: 600;
+            color: var(--yellow);
+            margin-bottom: 0.25rem;
+        }
+
+        .effect-icon {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            background: var(--accent);
+            border-radius: 6px;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        .toc {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .toc-title {
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+        }
+
+        .toc ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .toc li {
+            margin-bottom: 0.5rem;
+        }
+
+        .toc a {
+            color: var(--accent-light);
+            text-decoration: none;
+        }
+
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        .meter-colors {
+            display: flex;
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+
+        .meter-color {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .meter-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .meter-green { background: var(--green); }
+        .meter-yellow { background: var(--yellow); }
+        .meter-red { background: var(--red); }
+    </style>
+</head>
+<body>
+    <h1>Audio DSP</h1>
+    <p class="subtitle">Professional real-time audio processing for macOS</p>
+
+    <div class="toc">
+        <div class="toc-title">Contents</div>
+        <ul>
+            <li><a href="#getting-started">Getting Started</a></li>
+            <li><a href="#effects">Effects Overview</a></li>
+            <li><a href="#eq">Parametric EQ</a></li>
+            <li><a href="#dynamics">Dynamics Processing</a></li>
+            <li><a href="#spatial">Spatial Effects</a></li>
+            <li><a href="#enhancement">Enhancement Effects</a></li>
+            <li><a href="#presets">Working with Presets</a></li>
+            <li><a href="#shortcuts">Keyboard Shortcuts</a></li>
+            <li><a href="#tips">Tips & Best Practices</a></li>
+        </ul>
+    </div>
+
+    <h2 id="getting-started">Getting Started</h2>
+
+    <div class="card">
+        <h3>Audio Setup</h3>
+        <p>Audio DSP processes audio in real-time from your system's audio input. For best results:</p>
+        <ol>
+            <li>Install a virtual audio device like <strong>BlackHole</strong> to route audio from other applications</li>
+            <li>Set BlackHole as the output device in your audio source application</li>
+            <li>Audio DSP will capture and process this audio in real-time</li>
+        </ol>
+    </div>
+
+    <h3>Starting the Engine</h3>
+    <p>Click the <strong>Start</strong> button in the toolbar or press <kbd>⌘</kbd><kbd>R</kbd> to begin audio processing. The status indicator will turn green when the engine is running.</p>
+
+    <h3>Understanding the Interface</h3>
+    <p>The interface is organized into several panels:</p>
+    <ul>
+        <li><strong>Master Panel</strong> (top) - Engine controls, presets, output meters, and A/B comparison</li>
+        <li><strong>EQ Panel</strong> - 5-band parametric equalizer with spectrum analyzer</li>
+        <li><strong>Dynamics Panel</strong> - Compressor and limiter controls</li>
+        <li><strong>Effects Panel</strong> - Reverb, delay, stereo widener, bass enhancer, and vocal clarity</li>
+    </ul>
+
+    <h2 id="effects">Effects Overview</h2>
+
+    <p>Audio DSP includes 9 professional-grade effects that can be used individually or combined:</p>
+
+    <div class="card">
+        <table class="shortcut-table">
+            <tr>
+                <th>Effect</th>
+                <th>Description</th>
+                <th>Toggle</th>
+            </tr>
+            <tr>
+                <td>Parametric EQ</td>
+                <td>5-band equalizer with multiple filter types</td>
+                <td><kbd>⌘</kbd><kbd>1</kbd></td>
+            </tr>
+            <tr>
+                <td>Compressor</td>
+                <td>Dynamic range compression</td>
+                <td><kbd>⌘</kbd><kbd>2</kbd></td>
+            </tr>
+            <tr>
+                <td>Limiter</td>
+                <td>Peak limiting to prevent clipping</td>
+                <td><kbd>⌘</kbd><kbd>3</kbd></td>
+            </tr>
+            <tr>
+                <td>Reverb</td>
+                <td>Ambient space simulation</td>
+                <td><kbd>⌘</kbd><kbd>4</kbd></td>
+            </tr>
+            <tr>
+                <td>Delay</td>
+                <td>Echo/delay effect</td>
+                <td><kbd>⌘</kbd><kbd>5</kbd></td>
+            </tr>
+            <tr>
+                <td>Stereo Widener</td>
+                <td>Stereo image enhancement</td>
+                <td><kbd>⌘</kbd><kbd>6</kbd></td>
+            </tr>
+            <tr>
+                <td>Bass Enhancer</td>
+                <td>Low frequency enhancement</td>
+                <td><kbd>⌘</kbd><kbd>7</kbd></td>
+            </tr>
+            <tr>
+                <td>Vocal Clarity</td>
+                <td>Mid/presence enhancement</td>
+                <td><kbd>⌘</kbd><kbd>8</kbd></td>
+            </tr>
+            <tr>
+                <td>Output Gain</td>
+                <td>Final output level control</td>
+                <td>—</td>
+            </tr>
+        </table>
+    </div>
+
+    <h2 id="eq">Parametric EQ</h2>
+
+    <p>The 5-band parametric EQ provides precise tonal control with real-time spectrum analysis.</p>
+
+    <h3>Band Controls</h3>
+    <p>Each band has three main parameters:</p>
+    <ul>
+        <li><strong>Frequency</strong> - Center frequency of the filter (20 Hz - 20 kHz)</li>
+        <li><strong>Gain</strong> - Boost or cut in decibels (-24 dB to +24 dB)</li>
+        <li><strong>Q</strong> - Bandwidth/resonance of the filter (0.3 - 10.0)</li>
+    </ul>
+
+    <h3>Filter Types</h3>
+    <p>Each band can operate in different modes:</p>
+    <ul>
+        <li><strong>Low Shelf</strong> - Affects all frequencies below the cutoff</li>
+        <li><strong>High Shelf</strong> - Affects all frequencies above the cutoff</li>
+        <li><strong>Peak</strong> - Bell-shaped boost/cut around the center frequency</li>
+        <li><strong>Low Pass</strong> - Removes frequencies above the cutoff</li>
+        <li><strong>High Pass</strong> - Removes frequencies below the cutoff</li>
+    </ul>
+
+    <h3>Interactive Graph</h3>
+    <p>The EQ curve display allows direct manipulation:</p>
+    <ul>
+        <li><strong>Drag horizontally</strong> to adjust frequency</li>
+        <li><strong>Drag vertically</strong> to adjust gain</li>
+        <li><strong>Scroll wheel</strong> to adjust Q</li>
+        <li><strong>Double-click</strong> a band marker to reset to default</li>
+        <li>Hold <kbd>⌥</kbd> while dragging for fine adjustment</li>
+    </ul>
+
+    <div class="tip">
+        <div class="tip-title">Tip</div>
+        <p>Click the spectrum analyzer toggle to view the real-time frequency spectrum overlaid on the EQ curve.</p>
+    </div>
+
+    <h2 id="dynamics">Dynamics Processing</h2>
+
+    <h3>Compressor</h3>
+    <p>The compressor reduces the dynamic range of your audio, making quiet parts louder and loud parts quieter.</p>
+
+    <ul>
+        <li><strong>Threshold</strong> - Level at which compression begins (-60 dB to 0 dB)</li>
+        <li><strong>Ratio</strong> - Amount of compression applied (1:1 to 20:1)</li>
+        <li><strong>Attack</strong> - How quickly compression engages (0.1 ms to 100 ms)</li>
+        <li><strong>Release</strong> - How quickly compression releases (10 ms to 1000 ms)</li>
+        <li><strong>Makeup</strong> - Output gain compensation (-12 dB to +24 dB)</li>
+    </ul>
+
+    <h3>Limiter</h3>
+    <p>The limiter prevents audio from exceeding a maximum level, essential for preventing clipping.</p>
+
+    <ul>
+        <li><strong>Ceiling</strong> - Maximum output level (-12 dB to 0 dB)</li>
+        <li><strong>Release</strong> - How quickly the limiter releases (10 ms to 500 ms)</li>
+    </ul>
+
+    <div class="warning">
+        <div class="warning-title">Important</div>
+        <p>Always keep the limiter enabled with a ceiling of -0.3 dB or lower to prevent digital clipping.</p>
+    </div>
+
+    <h2 id="spatial">Spatial Effects</h2>
+
+    <h3>Reverb</h3>
+    <p>Adds spatial depth and ambience to your audio.</p>
+    <ul>
+        <li><strong>Room Size</strong> - Size of the simulated space (0% to 100%)</li>
+        <li><strong>Damping</strong> - High frequency absorption (0% to 100%)</li>
+        <li><strong>Width</strong> - Stereo spread of the reverb (0% to 100%)</li>
+        <li><strong>Mix</strong> - Wet/dry balance (0% to 100%)</li>
+    </ul>
+
+    <h3>Delay</h3>
+    <p>Creates echo effects with adjustable timing and feedback.</p>
+    <ul>
+        <li><strong>Time</strong> - Delay time (1 ms to 2000 ms)</li>
+        <li><strong>Feedback</strong> - Amount of signal fed back for repeating echoes (0% to 95%)</li>
+        <li><strong>Mix</strong> - Wet/dry balance (0% to 100%)</li>
+    </ul>
+
+    <h3>Stereo Widener</h3>
+    <p>Enhances or narrows the stereo image.</p>
+    <ul>
+        <li><strong>Width</strong> - Stereo width (0% = mono, 100% = normal, 200% = extra wide)</li>
+    </ul>
+
+    <div class="tip">
+        <div class="tip-title">Tip</div>
+        <p>Be careful with extreme stereo widening as it can cause phase issues when summed to mono.</p>
+    </div>
+
+    <h2 id="enhancement">Enhancement Effects</h2>
+
+    <h3>Bass Enhancer</h3>
+    <p>Adds harmonic richness to low frequencies for a fuller bass response.</p>
+    <ul>
+        <li><strong>Amount</strong> - Intensity of the enhancement (0% to 100%)</li>
+        <li><strong>Low Freq</strong> - Frequency below which enhancement is applied (20 Hz to 200 Hz)</li>
+        <li><strong>Harmonics</strong> - Amount of harmonic content added (0% to 100%)</li>
+    </ul>
+
+    <h3>Vocal Clarity</h3>
+    <p>Enhances presence and intelligibility in the vocal range.</p>
+    <ul>
+        <li><strong>Clarity</strong> - Mid-range presence enhancement (0% to 100%)</li>
+        <li><strong>Air</strong> - High frequency shimmer/air (0% to 100%)</li>
+    </ul>
+
+    <h2 id="presets">Working with Presets</h2>
+
+    <h3>Built-in Presets</h3>
+    <p>Audio DSP includes several professionally designed presets:</p>
+    <ul>
+        <li><strong>Flat</strong> - No processing, neutral response</li>
+        <li><strong>Bass Boost</strong> - Enhanced low frequencies</li>
+        <li><strong>Vocal Clarity</strong> - Optimized for speech and vocals</li>
+        <li><strong>Loudness</strong> - Increased perceived loudness</li>
+    </ul>
+
+    <h3>Saving Presets</h3>
+    <p>To save your current settings as a preset:</p>
+    <ol>
+        <li>Press <kbd>⌘</kbd><kbd>S</kbd> or click the save icon in the toolbar</li>
+        <li>Enter a name for your preset</li>
+        <li>Click "Save Preset"</li>
+    </ol>
+    <p>Presets are stored in <code>~/Library/Application Support/AudioDSP/Presets/</code></p>
+
+    <h3>Loading Presets</h3>
+    <p>Use the preset selector in the toolbar or navigate with:</p>
+    <ul>
+        <li><kbd>⌘</kbd><kbd>[</kbd> - Previous preset</li>
+        <li><kbd>⌘</kbd><kbd>]</kbd> - Next preset</li>
+    </ul>
+
+    <h3>A/B Comparison</h3>
+    <p>Use A/B slots to compare two different settings:</p>
+    <ol>
+        <li>Configure your first setting (Slot A)</li>
+        <li>Press <kbd>⌘</kbd><kbd>B</kbd> to switch to Slot B</li>
+        <li>Configure your alternative setting</li>
+        <li>Press <kbd>⌘</kbd><kbd>B</kbd> to toggle between them</li>
+    </ol>
+
+    <h2 id="shortcuts">Keyboard Shortcuts</h2>
+
+    <div class="card">
+        <h3>Audio Engine</h3>
+        <table class="shortcut-table">
+            <tr><td>Start Engine</td><td><kbd>⌘</kbd><kbd>R</kbd></td></tr>
+            <tr><td>Stop Engine</td><td><kbd>⌘</kbd><kbd>.</kbd></td></tr>
+            <tr><td>Toggle A/B</td><td><kbd>⌘</kbd><kbd>B</kbd></td></tr>
+            <tr><td>Bypass All Effects</td><td><kbd>⌥</kbd><kbd>⌘</kbd><kbd>0</kbd></td></tr>
+        </table>
+
+        <h3>Effects</h3>
+        <table class="shortcut-table">
+            <tr><td>Toggle EQ</td><td><kbd>⌘</kbd><kbd>1</kbd></td></tr>
+            <tr><td>Toggle Compressor</td><td><kbd>⌘</kbd><kbd>2</kbd></td></tr>
+            <tr><td>Toggle Limiter</td><td><kbd>⌘</kbd><kbd>3</kbd></td></tr>
+            <tr><td>Toggle Reverb</td><td><kbd>⌘</kbd><kbd>4</kbd></td></tr>
+            <tr><td>Toggle Delay</td><td><kbd>⌘</kbd><kbd>5</kbd></td></tr>
+            <tr><td>Toggle Stereo Widener</td><td><kbd>⌘</kbd><kbd>6</kbd></td></tr>
+            <tr><td>Toggle Bass Enhancer</td><td><kbd>⌘</kbd><kbd>7</kbd></td></tr>
+            <tr><td>Toggle Vocal Clarity</td><td><kbd>⌘</kbd><kbd>8</kbd></td></tr>
+            <tr><td>Reset All Parameters</td><td><kbd>⌥</kbd><kbd>⌘</kbd><kbd>R</kbd></td></tr>
+        </table>
+
+        <h3>Presets</h3>
+        <table class="shortcut-table">
+            <tr><td>Save Preset</td><td><kbd>⌘</kbd><kbd>S</kbd></td></tr>
+            <tr><td>Previous Preset</td><td><kbd>⌘</kbd><kbd>[</kbd></td></tr>
+            <tr><td>Next Preset</td><td><kbd>⌘</kbd><kbd>]</kbd></td></tr>
+        </table>
+
+        <h3>Edit</h3>
+        <table class="shortcut-table">
+            <tr><td>Undo</td><td><kbd>⌘</kbd><kbd>Z</kbd></td></tr>
+            <tr><td>Redo</td><td><kbd>⇧</kbd><kbd>⌘</kbd><kbd>Z</kbd></td></tr>
+        </table>
+
+        <h3>Window</h3>
+        <table class="shortcut-table">
+            <tr><td>Show Main Window</td><td><kbd>⌘</kbd><kbd>0</kbd></td></tr>
+            <tr><td>Preferences</td><td><kbd>⌘</kbd><kbd>,</kbd></td></tr>
+            <tr><td>Keyboard Shortcuts</td><td><kbd>⌘</kbd><kbd>/</kbd></td></tr>
+        </table>
+
+        <h3>Controls</h3>
+        <table class="shortcut-table">
+            <tr><td>Fine Adjustment</td><td>Hold <kbd>⌥</kbd> while dragging</td></tr>
+            <tr><td>Reset to Default</td><td>Double-click any control</td></tr>
+        </table>
+    </div>
+
+    <h2 id="tips">Tips & Best Practices</h2>
+
+    <div class="card">
+        <h3>Signal Flow</h3>
+        <p>Understanding the signal flow helps achieve better results:</p>
+        <ol>
+            <li><strong>Input</strong> → Audio captured from system input</li>
+            <li><strong>EQ</strong> → Tonal shaping</li>
+            <li><strong>Compressor</strong> → Dynamic control</li>
+            <li><strong>Bass Enhancer</strong> → Low-end enhancement</li>
+            <li><strong>Vocal Clarity</strong> → Presence enhancement</li>
+            <li><strong>Reverb</strong> → Spatial processing</li>
+            <li><strong>Delay</strong> → Time-based effects</li>
+            <li><strong>Stereo Widener</strong> → Stereo image processing</li>
+            <li><strong>Limiter</strong> → Peak protection</li>
+            <li><strong>Output Gain</strong> → Final level adjustment</li>
+        </ol>
+    </div>
+
+    <div class="tip">
+        <div class="tip-title">Best Practices</div>
+        <ul>
+            <li>Start with subtle adjustments - less is often more</li>
+            <li>Use the A/B comparison to evaluate your changes objectively</li>
+            <li>Keep an eye on the output meters to avoid clipping</li>
+            <li>Save your favorite settings as presets for quick recall</li>
+            <li>Use the spectrum analyzer to identify problem frequencies</li>
+        </ul>
+    </div>
+
+    <h3>Metering</h3>
+    <p>The output meters show your signal levels in real-time:</p>
+    <div class="meter-colors">
+        <div class="meter-color">
+            <div class="meter-dot meter-green"></div>
+            <span>Safe level (below -6 dB)</span>
+        </div>
+        <div class="meter-color">
+            <div class="meter-dot meter-yellow"></div>
+            <span>Caution (-6 dB to -3 dB)</span>
+        </div>
+        <div class="meter-color">
+            <div class="meter-dot meter-red"></div>
+            <span>Hot/Clipping (above -3 dB)</span>
+        </div>
+    </div>
+
+    <hr style="margin: 3rem 0; border: none; border-top: 1px solid var(--bg-card);">
+
+    <p style="text-align: center; color: var(--text-secondary); font-size: 0.9rem;">
+        Audio DSP v1.0.0<br>
+        Built with SwiftUI and CoreAudio
+    </p>
+</body>
+</html>
